@@ -1,0 +1,52 @@
+# This file contains the different endpoints your bot can use.
+
+# Server which runs your custom actions.
+# https://rasa.com/docs/rasa-pro/concepts/custom-actions
+# actions_module znaci da se akcije izvrsavaju u istom procesu kao Rasa (nema posebnog action servera).
+
+action_endpoint:
+  actions_module: "actions"
+
+# Allow rephrasing of responses using a Rasa-hosted model
+nlg:
+  type: rephrase
+  llm:
+    model_group: azure_llm_deployments
+
+# Baza znanja za EnterpriseSearchPolicy: Azure AI Search indeks (implementacija: azure_search_store.py)
+vector_store:
+  type: azure_search_store.AzureAISearch_Store
+  endpoint: ${AZURE_SEARCH_ENDPOINT}        # npr. https://<naziv-search-resursa>.search.windows.net
+  index_name: ${AZURE_SEARCH_INDEX}         # naziv indeksa
+  api_key: ${AZURE_SEARCH_API_KEY}          # Query key (dovoljan je read-only) iz Azure portala
+  content_field: chunk                      # polje sa tekstom (u tvom indeksu 'chunk' je popunjen, 'content' je prazan u svih 29 dokumenata)
+  metadata_fields: [title]                  # opciono, npr. [title, source]
+  semantic_configuration: rag-1790004221586-mss-stud-proj-semantic-configuration        # opciono: ime semantic konfiguracije iz indeksa
+  vector_field: text_vector             # opciono: ukljucuje hibridnu pretragu (koristi azure_embeddings)
+  top_k: 4
+  #vector_field i semantic_configuration obezbedjuju da se pretraga podataka vrsi semanticki a ne samo po kljucnoj reci.
+
+# Kljucevi se citaju iz .env fajla (${NAZIV_PROMENLJIVE}), ne upisuju se ovde.
+model_groups:
+  # Tekstualni LLM: command generator, EnterpriseSearchPolicy i rephraser
+  - id: azure_llm_deployments
+    models:
+      - provider: azure
+        deployment: gpt-5-mini-2
+        # samo host resursa, bez putanje - LiteLLM sam dodaje /openai/deployments/<deployment>/...
+        api_base: https://dp-20220322-foundry.services.ai.azure.com/
+        # Azure API verzija (NE verzija modela); 2025-08-07 je verzija modela gpt-5-mini
+        api_version: "2025-04-01-preview"
+        api_key: ${AZURE_API_KEY}
+    router:
+      routing_strategy: simple-shuffle
+
+  # Embedding model: potreban EnterpriseSearchPolicy-ju za pretragu dokumenata.
+  # TODO: upisi ime svog embedding deployment-a iz Azure-a i proveri api_base/api_version.
+  - id: azure_embeddings
+    models:
+      - provider: azure
+        deployment: text-embedding-3-small
+        api_base: https://dp-20220322-foundry.services.ai.azure.com/
+        api_version: "2024-02-01"
+        api_key: ${AZURE_API_KEY}

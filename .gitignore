@@ -1,0 +1,9 @@
+# Tajni kljucevi - nikad ne commit-ovati
+.env
+
+# Virtuelno okruzenje i generisani fajlovi
+.venv/
+__pycache__/
+*.pyc
+.rasa/
+models/

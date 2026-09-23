@@ -1,0 +1,136 @@
+version: "3.1"
+
+actions:
+  - action_search_events
+  - action_get_event_availability
+  - action_list_my_reservations
+  - action_reserve_event
+  - action_cancel_reservation
+
+slots:
+  # --- Filteri za pretragu događaja (opcioni, LLM ih popunjava iz poruke) ---
+  # initial_value je bitan: collect korak se PRESKACE kad slot vec ima vrednost,
+  # pa Rasa ne pita za filtere koje korisnik nije naveo. Prazan tekst / false = "bez filtera".
+  search_term:
+    type: text
+    initial_value: ""
+    mappings:
+      - type: from_llm
+  start_date:
+    type: text
+    initial_value: ""
+    mappings:
+      - type: from_llm
+  end_date:
+    type: text
+    initial_value: ""
+    mappings:
+      - type: from_llm
+  location:
+    type: text
+    initial_value: ""
+    mappings:
+      - type: from_llm
+  only_available:
+    type: bool
+    initial_value: false
+    mappings:
+      - type: from_llm
+
+  # --- Identifikatori nad kojima se izvršava akcija ---
+  event_id:
+    type: float
+    mappings:
+      - type: from_llm
+  reservation_id:
+    type: float
+    mappings:
+      - type: from_llm
+  notes:
+    type: text
+    mappings:
+      - type: from_llm
+
+  # --- Rezultati akcija, popunjava ih iskljucivo Python akcija (SlotSet),
+  #     nikad LLM - odgovori ih samo prikazuju korisniku. ---
+  events_search_result:
+    type: text
+    mappings:
+      - type: controlled
+  event_availability_result:
+    type: text
+    mappings:
+      - type: controlled
+  my_reservations_result:
+    type: text
+    mappings:
+      - type: controlled
+  reservation_action_result:
+    type: text
+    mappings:
+      - type: controlled
+
+responses:
+  utter_ask_search_term:
+    - text: "Šta biste želeli da pronađete? Recite naziv, temu, ili 'svi događaji' ako želite kompletnu listu."
+
+  utter_ask_start_date:
+    - text: "Od kog datuma da tražim događaje? (npr. 2026-10-01, ili recite da vam nije bitno)"
+
+  utter_ask_end_date:
+    - text: "Do kog datuma da tražim događaje?"
+
+  utter_ask_location:
+    - text: "Da li tražite događaje u određenom mestu?"
+
+  utter_ask_only_available:
+    - text: "Da prikažem samo događaje koji još uvek imaju slobodnih mesta?"
+
+  utter_ask_event_id:
+    - text: "Za koji događaj vas zanima ova informacija? Recite naziv događaja ili njegov ID."
+
+  utter_ask_notes:
+    - text: "Želite li da dodate napomenu uz rezervaciju? Ako ne, recite 'ne'."
+
+  utter_ask_reservation_id:
+    - text: "Koju rezervaciju želite da otkažete? Recite ID rezervacije ili naziv događaja."
+
+  utter_search_events_result:
+    - text: "{events_search_result}"
+
+  utter_event_availability_result:
+    - text: "{event_availability_result}"
+
+  utter_my_reservations_result:
+    - text: "{my_reservations_result}"
+
+  utter_reservation_action_result:
+    - text: "{reservation_action_result}"
+
+  # Override za ugrađeni pattern_cannot_handle flow (grana "not_supported") -
+  # ovo je tacan tekst koji je stari Foundry agent vracao za zahteve van
+  # obima ove aplikacije.
+  utter_cannot_handle:
+    - text: "Nije moguce izvrsiti trazeni zahtev"
+
+  # Koristi ga EnterpriseSearchPolicy kad u ./docs nema relevantnog odgovora (check_relevancy: true).
+  utter_no_relevant_answer_found:
+    - text: "Nažalost, nemam informaciju o tome. Mogu da pomognem oko pretrage događaja, dostupnosti i rezervacija."
+      metadata:
+        rephrase: True
+
+  utter_free_chitchat_response:
+    - text: "placeholder"
+      metadata:
+        rephrase: True
+        rephrase_prompt: |
+          Sledi razgovor sa AI asistentom napravljenim u Rasa frejmvorku.
+          Asistent pomaže korisnicima da pronađu događaje, provere dostupnost
+          i upravljaju svojim rezervacijama za Event Reservation aplikaciju.
+          Asistent je ljubazan, kratak i prijateljski nastrojen.
+          Korisnik ćaska van teme - asistent treba da odgovori kratko i
+          ljubazno, bez izmišljanja podataka o događajima ili rezervacijama.
+          Kontekst / prethodni razgovor sa korisnikom:
+          {{history}}
+          {{current_input}}
+          Predloženi odgovor asistenta:

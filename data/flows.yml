@@ -1,0 +1,100 @@
+flows:
+  search_events:
+    description: |
+      Koristi ovaj flow kada korisnik pita koji događaji postoje, želi da
+      pretraži događaje, ili traži događaje po nazivu/temi, opsegu datuma,
+      lokaciji ili dostupnosti. Svi filteri su opcioni - ako korisnik ne
+      navede neki kriterijum, ne pitaj ga eksplicitno za njega, samo pretraži
+      bez tog filtera. Ako korisnik traži "sve događaje", ostavi sve filtere
+      praznim i odmah pokreni pretragu. Za period koji korisnik opiše (npr.
+      "u oktobru 2026") postavi start_date na prvi, a end_date na poslednji
+      dan tog perioda.
+    steps:
+      - collect: search_term
+        ask_before_filling: false
+        description: Slobodan tekst za pretragu po nazivu/opisu događaja. Ostavi prazno ako korisnik nije naveo temu.
+      - collect: start_date
+        ask_before_filling: false
+        description: Samo događaji koji počinju na ili posle ovog datuma (ISO 8601, npr. 2026-10-01).
+      - collect: end_date
+        ask_before_filling: false
+        description: Samo događaji koji počinju na ili pre ovog datuma (ISO 8601).
+      - collect: location
+        ask_before_filling: false
+        description: Deo naziva lokacije/mesta održavanja.
+      - collect: only_available
+        ask_before_filling: false
+        description: Postavi na true samo ako je korisnik eksplicitno tražio isključivo događaje sa slobodnim mestima.
+      - action: action_search_events
+      - action: utter_search_events_result
+      - set_slots:
+          # vracanje na pocetne vrednosti ("bez filtera") za sledecu pretragu
+          - search_term: ""
+          - start_date: ""
+          - end_date: ""
+          - location: ""
+          - only_available: false
+
+  check_event_availability:
+    description: |
+      Koristi ovaj flow da proveriš preostali kapacitet/dostupnost za JEDAN
+      konkretan događaj koji je korisnik već imenovao ili koji je upravo
+      pronađen kroz search_events flow.
+    steps:
+      - collect: event_id
+        ask_before_filling: true
+        description: |
+          ID događaja za koji se proverava dostupnost. Ako korisnik pomene
+          događaj po imenu, potraži odgovarajući ID u prethodnim porukama
+          (npr. u rezultatima search_events flow-a, koji navode "ID <broj>"
+          pored svakog događaja).
+      - action: action_get_event_availability
+      - action: utter_event_availability_result
+      - set_slots:
+          - event_id: null
+
+  list_my_reservations:
+    description: |
+      Koristi ovaj flow kada korisnik želi da vidi SVOJE rezervacije
+      (npr. "koje rezervacije imam", "prikaži moje rezervacije").
+    steps:
+      - action: action_list_my_reservations
+      - action: utter_my_reservations_result
+
+  reserve_event:
+    description: |
+      Koristi ovaj flow kada korisnik želi da rezerviše/zakaže mesto na
+      događaju za sebe (npr. "rezerviši mi mesto na ...", "hoću da idem na
+      ...").
+    steps:
+      - collect: event_id
+        ask_before_filling: true
+        description: |
+          ID događaja koji korisnik želi da rezerviše. Ako korisnik pomene
+          događaj po imenu, potraži odgovarajući ID u prethodnim porukama
+          (npr. u rezultatima search_events flow-a).
+      - collect: notes
+        ask_before_filling: false
+        description: Opciona napomena uz rezervaciju. Ostavi prazno ako je korisnik ne pomene.
+      - action: action_reserve_event
+      - action: utter_reservation_action_result
+      - set_slots:
+          - event_id: null
+          - notes: null
+
+  cancel_reservation:
+    description: |
+      Koristi ovaj flow kada korisnik želi da otkaže jednu od SVOJIH
+      postojećih rezervacija.
+    steps:
+      - collect: reservation_id
+        ask_before_filling: true
+        description: |
+          ID rezervacije koju treba otkazati. Ako korisnik pomene događaj po
+          imenu umesto ID-a rezervacije, potraži odgovarajući ID rezervacije
+          u prethodnim porukama (npr. u rezultatima list_my_reservations
+          flow-a, koji navode "ID rezervacije <broj>" za svaki unos).
+      - action: action_cancel_reservation
+      - action: utter_reservation_action_result
+      - set_slots:
+          - reservation_id: null
