@@ -10,8 +10,13 @@ action_endpoint:
 # Allow rephrasing of responses using a Rasa-hosted model
 nlg:
   type: rephrase
+  # Rasin podrazumevani prompt + pravilo da preformulisani odgovori budu samo na cirilici
+  # (vazi za sve odgovore sa rephrase: True, npr. ugradjene engleske iz pattern-a)
+  prompt_template: prompts/rephraser_prompt.jinja2
   llm:
     model_group: azure_llm_deployments
+  summarize_history: false
+  max_historical_turns: 10
 
 # Baza znanja za EnterpriseSearchPolicy: Azure AI Search indeks (implementacija: azure_search_store.py)
 vector_store:
@@ -50,3 +55,23 @@ model_groups:
         api_base: https://dp-20220322-foundry.services.ai.azure.com/
         api_version: "2024-02-01"
         api_key: ${AZURE_API_KEY}
+
+# Istorija razgovora: SQLTrackerStore u LocalDB bazi RasaTracker (tabele events i users pravi Rasa)
+tracker_store:
+  type: SQL
+  dialect: "mssql+pyodbc"
+  url: '(localdb)\MSSQLLocalDB'   # isto ime servera kao u SSMS
+  db: "RasaTracker"
+  query:
+    driver: "ODBC Driver 17 for SQL Server"
+    Trusted_Connection: "yes"     # Windows login - ne trebaju username/password
+
+# Trajna istorija: samo poruke korisnik/bot u tabelu ChatMessages (implementacija: chat_message_broker.py)
+event_broker:
+  type: chat_message_broker.ChatMessageBroker
+  dialect: "mssql+pyodbc"
+  url: '(localdb)\MSSQLLocalDB'
+  db: "RasaTracker"
+  query:
+    driver: "ODBC Driver 17 for SQL Server"
+    Trusted_Connection: "yes"

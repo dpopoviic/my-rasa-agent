@@ -15,8 +15,8 @@ shared-secret X-Internal-Api-Key, so InternalApiKeyHandler on the .NET side
 can build a ClaimsPrincipal for the request exactly as if it came from the
 signed-in user's own browser.
 """
-
 import logging
+import calendar
 import os
 import re
 from typing import Any, Dict, List, Optional, Text
@@ -36,8 +36,8 @@ REQUEST_TIMEOUT_SECONDS = 10
 # false samo u razvoju (ASP.NET dev sertifikat); vidi .env
 VERIFY_SSL = os.environ.get("INTERNAL_API_VERIFY_SSL", "true").lower() != "false"
 
-NOT_SIGNED_IN_MESSAGE = "Morate biti prijavljeni da biste ovo uradili."
-GENERIC_ERROR_MESSAGE = "Došlo je do problema prilikom komunikacije sa aplikacijom. Molimo pokušajte ponovo kasnije."
+NOT_SIGNED_IN_MESSAGE = "Морате бити пријављени да бисте ово урадили."
+GENERIC_ERROR_MESSAGE = "Дошло је до проблема приликом комуникације са апликацијом. Молимо покушајте поново касније."
 
 
 def _log_failure(exc: requests.RequestException) -> None:
@@ -76,7 +76,10 @@ def _headers(user_id: Text) -> Dict[Text, Text]:
 _NO_FILTER_WORDS = {
     "ne", "nije bitno", "nebitno", "svejedno", "svi", "sve", "svi dogadjaji",
     "svi događaji", "bilo koji", "bilo gde", "bilo koje", "nista", "ništa",
-    "nema", "-", "none", "null", "any", "all", "no",
+    "nema", "-", "none", "null", "any", "all", "no", "nemam", "bez napomene", "ne hvala",
+    # isto na cirilici - korisnik moze da pise i cirilicom
+    "не", "није битно", "небитно", "свеједно", "сви", "све", "сви догађаји",
+    "било који", "било где", "било које", "ништа", "нема", "немам", "без напомене", "не хвала",
 }
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
@@ -99,7 +102,7 @@ def _clean_date(value: Any) -> Optional[Text]:
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() in {"true", "da", "yes", "1"}
+    return str(value).strip().lower() in {"true", "da", "да", "yes", "1"}
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -110,6 +113,15 @@ def _as_int(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
 
+def _norm(value: Any) -> Text:
+    return str(value or "").strip().casefold()
+
+def _event_found(event: Dict[Text, Any], status: Text) -> List[Dict[Text, Any]]:
+    return[
+        SlotSet("event_id", event.get("eventId")),
+        SlotSet("event_name", event.get("name")), #pun naziv za potvrdu i poruke
+        SlotSet("event_match", status),
+    ]
 
 class ActionSearchEvents(Action):
     def name(self) -> Text:
@@ -136,6 +148,18 @@ class ActionSearchEvents(Action):
         }
         params = {k: v for k, v in params.items() if v is not None}
 
+        # Mesec/godina -> opseg datuma; konkretni datumi koje je korisnik naveo imaju prednost.
+        month = _as_int(_clean_text(tracker.get_slot("search_month")))
+        year = _as_int(_clean_text(tracker.get_slot("search_year")))
+        if year and "startDate" not in params and "endDate" not in params:
+            if month and 1 <= month <= 12:
+                last_day = calendar.monthrange(year, month)[1]
+                params["startDate"] = f"{year}-{month:02d}-01"
+                params["endDate"] = f"{year}-{month:02d}-{last_day:02d}"
+            else:
+                params["startDate"] = f"{year}-01-01"
+                params["endDate"] = f"{year}-12-31"
+
         try:
             response = requests.get(
                 f"{INTERNAL_API_BASE_URL}/api/internal/events/search",
@@ -151,15 +175,14 @@ class ActionSearchEvents(Action):
             return [SlotSet("events_search_result", GENERIC_ERROR_MESSAGE)]
 
         if not events:
-            return [SlotSet(
-                "events_search_result",
-                "Nema pronađenih događaja za zadate kriterijume.",
-            )]
-
+            return [
+                SlotSet("events_search_result", "Нема пронађених догађаја за задате критеријуме."),
+                SlotSet("last_listed_events", []),
+            ]
+        
         lines = [
-            "ID {eventId}: {name} - {location}, {start} do {end}, "
-            "slobodno {available}/{capacity} mesta".format(
-                eventId=e.get("eventId"),
+            "{name} - {location}, {start} до {end}, "
+            "слободно {available}/{capacity} места".format(
                 name=e.get("name"),
                 location=e.get("location"),
                 start=str(e.get("startDate", ""))[:10],
@@ -167,11 +190,77 @@ class ActionSearchEvents(Action):
                 available=e.get("availablePlaces"),
                 capacity=e.get("capacity"),
             )
+
             for e in events
         ]
 
-        return [SlotSet("events_search_result", "\n".join(lines))]
+        return [
+            SlotSet("events_search_result", "\n".join(lines)),
+            SlotSet("last_listed_events", [e.get("name") for e in events]),
+        ]
 
+class ActionResolveEvent(Action):
+    """Pretvara naziv (ili deo naziva) koji je korisnik rekao u tacno jedan dogadjaj.
+
+    Poklapanje naziva (cirilica/latinica, samo buduci dogadjaji) radi .NET
+    (/events/resolve); ovde se odlucuje samo o toku razgovora.
+    """
+
+    def name(self) -> Text:
+        return "action_resolve_event"
+
+    def run(
+        self,
+        dispatcher: CollectingDispatcher,
+        tracker: Tracker,
+        domain: Dict[Text, Any],
+    ) -> List[Dict[Text, Any]]:
+        user_id = _current_user_id(tracker)
+        if not user_id:
+            dispatcher.utter_message(text=NOT_SIGNED_IN_MESSAGE)
+            return [SlotSet("event_match", "error")]
+
+        term = _clean_text(tracker.get_slot("event_name"))
+        if not term:
+            return [SlotSet("event_match", "not_found"), SlotSet("event_name", None)]
+
+        try:
+            response = requests.get(
+                f"{INTERNAL_API_BASE_URL}/api/internal/events/resolve",
+                params={"name": term},
+                headers=_headers(user_id),
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                verify=VERIFY_SSL,
+            )
+            response.raise_for_status()
+            candidates = response.json() or []
+        except requests.RequestException as exc:
+            _log_failure(exc)
+            dispatcher.utter_message(text=GENERIC_ERROR_MESSAGE)
+            return [SlotSet("event_match", "error")]
+
+        if len(candidates) == 1:
+            return _event_found(candidates[0], "found")
+
+        if not candidates:
+            dispatcher.utter_message(
+                text=f"Нисам пронашао догађај под називом „{term}“. Молим унесите тачан назив."
+            )
+            return [SlotSet("event_match", "not_found"), SlotSet("event_name", None)]
+
+        # Vise kandidata: ako je tacno jedan bio u poslednjem prikazanom spisku, trazimo potvrdu.
+        shown = {_norm(n) for n in (tracker.get_slot("last_listed_events") or [])}
+        from_last = [c for c in candidates if _norm(c.get("name")) in shown]
+        if len(from_last) == 1:
+            return _event_found(from_last[0], "confirm")
+
+        names = "\n".join(
+            f"- {c.get('name')} ({str(c.get('startDate', ''))[:10]})" for c in candidates
+        )
+        dispatcher.utter_message(
+            text=f"Пронашао сам више догађаја који садрже „{term}“:\n{names}"
+        )
+        return [SlotSet("event_match", "ambiguous"), SlotSet("event_name", None)]
 
 class ActionGetEventAvailability(Action):
     def name(self) -> Text:
@@ -191,7 +280,7 @@ class ActionGetEventAvailability(Action):
         if event_id is None:
             return [SlotSet(
                 "event_availability_result",
-                "Nisam uspeo da prepoznam o kom događaju je reč. Možete li ponoviti naziv ili ID događaja?",
+                "Нисам успео да препознам о ком догађају је реч. Можете ли поновити пун назив догађаја?",
             )]
 
         try:
@@ -204,7 +293,7 @@ class ActionGetEventAvailability(Action):
             if response.status_code == 404:
                 return [SlotSet(
                     "event_availability_result",
-                    f"Nije pronađen događaj sa ID {event_id}.",
+                    "Тражени догађај није пронађен.",
                 )]
             response.raise_for_status()
             availability = response.json()
@@ -213,7 +302,7 @@ class ActionGetEventAvailability(Action):
             return [SlotSet("event_availability_result", GENERIC_ERROR_MESSAGE)]
 
         message = (
-            "{name}: {reserved}/{capacity} rezervisano, slobodno {available} mesta. "
+            "{name}: {reserved}/{capacity} резервисано, слободно {available} места. "
             "{status}"
         ).format(
             name=availability.get("eventName"),
@@ -221,9 +310,9 @@ class ActionGetEventAvailability(Action):
             capacity=availability.get("capacity"),
             available=availability.get("availablePlaces"),
             status=(
-                "Rezervacije su moguće."
+                "Резервације су могуће."
                 if availability.get("isAvailableForReservation")
-                else "Nema više slobodnih mesta."
+                else "Нема више слободних места."
             ),
         )
 
@@ -258,14 +347,14 @@ class ActionListMyReservations(Action):
             return [SlotSet("my_reservations_result", GENERIC_ERROR_MESSAGE)]
 
         if not reservations:
-            return [SlotSet("my_reservations_result", "Trenutno nemate nijednu rezervaciju.")]
+            return [SlotSet("my_reservations_result", "Тренутно немате ниједну резервацију.")]
 
         lines = [
-            "ID rezervacije {reservationId}: {eventName} ({eventStart}){notes}".format(
+            "ID резервације {reservationId}: {eventName} ({eventStart}){notes}".format(
                 reservationId=r.get("reservationId"),
                 eventName=r.get("eventName"),
                 eventStart=str(r.get("eventStartDate", ""))[:10],
-                notes=f" - napomena: {r['notes']}" if r.get("notes") else "",
+                notes=f" - напомена: {r['notes']}" if r.get("notes") else "",
             )
             for r in reservations
         ]
@@ -291,10 +380,10 @@ class ActionReserveEvent(Action):
         if event_id is None:
             return [SlotSet(
                 "reservation_action_result",
-                "Nisam uspeo da prepoznam koji događaj želite da rezervišete.",
+                "Нисам успео да препознам који догађај желите да резервишете.",
             )]
 
-        notes = tracker.get_slot("notes")
+        notes = _clean_text(tracker.get_slot("notes"))
 
         try:
             response = requests.post(
@@ -311,9 +400,9 @@ class ActionReserveEvent(Action):
             return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
 
         if result.get("success"):
-            message = f"Rezervacija je uspešno kreirana (ID {result.get('reservationId')})."
+            message = f"Резервација за догађај {tracker.get_slot('event_name')} је успешно креирана."
         else:
-            message = result.get("message") or "Rezervacija nije uspela."
+            message = result.get("message") or "Резервација није успела."
 
         return [SlotSet("reservation_action_result", message)]
 
@@ -336,7 +425,7 @@ class ActionCancelReservation(Action):
         if reservation_id is None:
             return [SlotSet(
                 "reservation_action_result",
-                "Nisam uspeo da prepoznam koju rezervaciju želite da otkažete.",
+                "Нисам успео да препознам коју резервацију желите да откажете.",
             )]
 
         try:
@@ -353,8 +442,8 @@ class ActionCancelReservation(Action):
             return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
 
         if result.get("success"):
-            message = "Rezervacija je uspešno otkazana."
+            message = "Резервација је успешно отказана."
         else:
-            message = result.get("message") or "Otkazivanje rezervacije nije uspelo."
+            message = result.get("message") or "Отказивање резервације није успело."
 
         return [SlotSet("reservation_action_result", message)]

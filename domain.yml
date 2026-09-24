@@ -2,6 +2,7 @@ version: "3.1"
 
 actions:
   - action_search_events
+  - action_resolve_event
   - action_get_event_availability
   - action_list_my_reservations
   - action_reserve_event
@@ -26,6 +27,15 @@ slots:
     initial_value: ""
     mappings:
       - type: from_llm
+  search_month:
+    type: text
+    initial_value: ""
+    mappings:
+      - type: from_llm
+  search_year:
+    type: text
+    mappings:
+      - type: from_llm
   location:
     type: text
     initial_value: ""
@@ -38,10 +48,27 @@ slots:
       - type: from_llm
 
   # --- Identifikatori nad kojima se izvršava akcija ---
+  event_name:
+    type: text
+    mappings:
+      - type: from_llm
   event_id:
     type: float
     mappings:
       - type: from_llm
+  event_confirmed:
+    type: bool
+    mappings:
+      - type: from_llm
+  event_match:
+    type: text
+    mappings:
+      - type: controlled
+  last_listed_events:
+    type: list
+    mappings:
+      - type: controlled
+
   reservation_id:
     type: float
     mappings:
@@ -72,28 +99,34 @@ slots:
 
 responses:
   utter_ask_search_term:
-    - text: "Šta biste želeli da pronađete? Recite naziv, temu, ili 'svi događaji' ako želite kompletnu listu."
+    - text: "Шта бисте желели да пронађете? Реците назив, тему, или 'сви догађаји' ако желите комплетну листу."
 
   utter_ask_start_date:
-    - text: "Od kog datuma da tražim događaje? (npr. 2026-10-01, ili recite da vam nije bitno)"
+    - text: "Од ког датума да тражим догађаје? (нпр. 2026-10-01, или реците да вам није битно)"
 
   utter_ask_end_date:
-    - text: "Do kog datuma da tražim događaje?"
+    - text: "До ког датума да тражим догађаје?"
+  
+  utter_ask_search_year:
+    - text: "Нисте навели годину. За коју годину да тражим догађаје?"
 
   utter_ask_location:
-    - text: "Da li tražite događaje u određenom mestu?"
+    - text: "Да ли тражите догађаје у одређеном месту?"
 
   utter_ask_only_available:
-    - text: "Da prikažem samo događaje koji još uvek imaju slobodnih mesta?"
+    - text: "Да прикажем само догађаје који још увек имају слободних места?"
 
-  utter_ask_event_id:
-    - text: "Za koji događaj vas zanima ova informacija? Recite naziv događaja ili njegov ID."
+  utter_ask_event_name:
+    - text: "За који догађај? Унесите назив догађаја."
+
+  utter_ask_event_confirmed:
+    - text: "Да ли сте сигурни да желите резервацију за догађај {event_name}?"
 
   utter_ask_notes:
-    - text: "Želite li da dodate napomenu uz rezervaciju? Ako ne, recite 'ne'."
+    - text: "Желите ли да додате напомену уз резервацију? Ако не, реците 'не'."
 
   utter_ask_reservation_id:
-    - text: "Koju rezervaciju želite da otkažete? Recite ID rezervacije ili naziv događaja."
+    - text: "Коју резервацију желите да откажете? Реците ID резервације или назив догађаја."
 
   utter_search_events_result:
     - text: "{events_search_result}"
@@ -111,13 +144,16 @@ responses:
   # ovo je tacan tekst koji je stari Foundry agent vracao za zahteve van
   # obima ove aplikacije.
   utter_cannot_handle:
-    - text: "Nije moguce izvrsiti trazeni zahtev"
+    - text: "Није могуће извршити тражени захтев"
 
   # Koristi ga EnterpriseSearchPolicy kad u ./docs nema relevantnog odgovora (check_relevancy: true).
   utter_no_relevant_answer_found:
-    - text: "Nažalost, nemam informaciju o tome. Mogu da pomognem oko pretrage događaja, dostupnosti i rezervacija."
-      metadata:
-        rephrase: True
+    - text: "Нажалост, немам информацију о томе. Могу да помогнем око претраге догађаја, доступности и резервација."
+
+  # Override ugradjenog odgovora iz pattern_completed (original je engleski + rephrase,
+  # pa je LLM birao pismo sam). Fiksan tekst, bez rephrase.
+  utter_can_do_something_else:
+    - text: "Да ли могу да Вам помогнем са још нечим?"
 
   utter_free_chitchat_response:
     - text: "placeholder"
@@ -130,7 +166,13 @@ responses:
           Asistent je ljubazan, kratak i prijateljski nastrojen.
           Korisnik ćaska van teme - asistent treba da odgovori kratko i
           ljubazno, bez izmišljanja podataka o događajima ili rezervacijama.
+          Asistent UVEK odgovara na srpskom jeziku, ISKLJUČIVO ćiriličnim pismom,
+          čak i kada korisnik piše latinicom ili na drugom jeziku. Ne mešati pisma.
           Kontekst / prethodni razgovor sa korisnikom:
           {{history}}
           {{current_input}}
           Predloženi odgovor asistenta:
+
+session_config:
+  session_expiration_time: 60   # posle 60 min neaktivnosti pocinje nova sesija (LLM vise ne vidi stari razgovor)
+  carry_over_slots_to_new_session: true   # popunjeni slotovi se prenose u novu sesiju

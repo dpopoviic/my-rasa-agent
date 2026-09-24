@@ -2,56 +2,86 @@ flows:
   search_events:
     description: |
       Koristi ovaj flow kada korisnik pita koji događaji postoje, želi da
-      pretraži događaje, ili traži događaje po nazivu/temi, opsegu datuma,
+      pretraži događaje, ili traži događaje po nazivu/temi, periodu,
       lokaciji ili dostupnosti. Svi filteri su opcioni - ako korisnik ne
       navede neki kriterijum, ne pitaj ga eksplicitno za njega, samo pretraži
       bez tog filtera. Ako korisnik traži "sve događaje", ostavi sve filtere
-      praznim i odmah pokreni pretragu. Za period koji korisnik opiše (npr.
-      "u oktobru 2026") postavi start_date na prvi, a end_date na poslednji
-      dan tog perioda.
+      praznim i odmah pokreni pretragu.
+      Ako korisnik navede mesec (npr. "oktobar"), upiši broj meseca (1-12)
+      u search_month. Godinu upiši u search_year SAMO ako ju je korisnik
+      izričito rekao - NIKAD je ne pretpostavljaj. Ako korisnik navede samo
+      godinu (npr. "u 2026. godini"), upiši je u search_year, a search_month
+      ostavi prazno. start_date/end_date koristi samo za konkretne datume
+      koje je korisnik naveo (npr. "od 5. do 10. oktobra 2026").
+      Ako korisnik upise naziv grada u nekom padežu (npr. "u Beogradu"), 
+      prebaci ga u nominativ (npr. "Beograd") i pretraži kao location.
     steps:
       - collect: search_term
         ask_before_filling: false
         description: Slobodan tekst za pretragu po nazivu/opisu događaja. Ostavi prazno ako korisnik nije naveo temu.
       - collect: start_date
         ask_before_filling: false
-        description: Samo događaji koji počinju na ili posle ovog datuma (ISO 8601, npr. 2026-10-01).
+        description: Samo događaji koji počinju na ili posle ovog datuma (ISO 8601, npr. 2026-10-05). Samo za konkretan datum, ne za ceo mesec ili godinu.
       - collect: end_date
         ask_before_filling: false
-        description: Samo događaji koji počinju na ili pre ovog datuma (ISO 8601).
+        description: Samo događaji koji počinju na ili pre ovog datuma (ISO 8601). Samo za konkretan datum, ne za ceo mesec ili godinu.
+      - collect: search_month
+        ask_before_filling: false
+        description: Broj meseca 1-12 ako je korisnik naveo mesec ("oktobar" -> 10). Prazno ako nije.
       - collect: location
         ask_before_filling: false
-        description: Deo naziva lokacije/mesta održavanja.
+        description: |
+          Naziv mesta u nominativu, latinicom ("u Beogradu" -> "Beograd",
+          "у Новом Саду" -> "Novi Sad"). Prazno ako korisnik nije naveo mesto.
       - collect: only_available
         ask_before_filling: false
         description: Postavi na true samo ako je korisnik eksplicitno tražio isključivo događaje sa slobodnim mestima.
-      - action: action_search_events
+        next:
+          - if: slots.search_month != "" and not slots.search_year
+            then: ask_year
+          - else: run_search
+      - id: ask_year
+        collect: search_year
+        description: Godina (npr. 2026) ako ju je korisnik izričito naveo, sa mesecom ili bez njega. Nikad je ne pretpostavljaj.
+        next: run_search
+      - id: run_search
+        action: action_search_events
       - action: utter_search_events_result
       - set_slots:
           # vracanje na pocetne vrednosti ("bez filtera") za sledecu pretragu
           - search_term: ""
           - start_date: ""
           - end_date: ""
+          - search_month: ""
+          - search_year: null
           - location: ""
           - only_available: false
 
   check_event_availability:
     description: |
       Koristi ovaj flow da proveriš preostali kapacitet/dostupnost za JEDAN
-      konkretan događaj koji je korisnik već imenovao ili koji je upravo
-      pronađen kroz search_events flow.
+      konkretan događaj koji je korisnik imenovao (pun ili skraćen naziv).
     steps:
-      - collect: event_id
-        ask_before_filling: true
+      - id: ask_event_name
+        collect: event_name
         description: |
-          ID događaja za koji se proverava dostupnost. Ako korisnik pomene
-          događaj po imenu, potraži odgovarajući ID u prethodnim porukama
-          (npr. u rezultatima search_events flow-a, koji navode "ID <broj>"
-          pored svakog događaja).
-      - action: action_get_event_availability
+          Naziv događaja TAČNO onako kako ga je korisnik napisao, pun ili
+          skraćen (npr. "Summit"). Ne izmišljaj i ne dopunjuj naziv.
+      - action: action_resolve_event
+        next:
+          - if: slots.event_match == "found" or slots.event_match == "confirm"
+            then: check
+          - if: slots.event_match == "error"
+            then: cleanup
+          - else: ask_event_name        # ambiguous/not_found: akcija je vec ispisala poruku
+      - id: check
+        action: action_get_event_availability
       - action: utter_event_availability_result
-      - set_slots:
+      - id: cleanup
+        set_slots:
+          - event_name: null
           - event_id: null
+          - event_match: null
 
   list_my_reservations:
     description: |
@@ -64,22 +94,51 @@ flows:
   reserve_event:
     description: |
       Koristi ovaj flow kada korisnik želi da rezerviše/zakaže mesto na
-      događaju za sebe (npr. "rezerviši mi mesto na ...", "hoću da idem na
-      ...").
+      događaju za sebe (npr. "rezerviši mi mesto na ...", "napravi mi
+      rezervaciju za Summit", "hoću da idem na ...").
     steps:
-      - collect: event_id
-        ask_before_filling: true
+      - id: ask_event_name
+        collect: event_name
         description: |
-          ID događaja koji korisnik želi da rezerviše. Ako korisnik pomene
-          događaj po imenu, potraži odgovarajući ID u prethodnim porukama
-          (npr. u rezultatima search_events flow-a).
-      - collect: notes
-        ask_before_filling: false
-        description: Opciona napomena uz rezervaciju. Ostavi prazno ako je korisnik ne pomene.
+          Naziv događaja TAČNO onako kako ga je korisnik napisao, pun ili
+          skraćen (npr. "Summit"). Ne izmišljaj i ne dopunjuj naziv.
+      - action: action_resolve_event
+        next:
+          - if: slots.event_match == "found"
+            then: ask_notes
+          - if: slots.event_match == "confirm"
+            then: confirm_event
+          - if: slots.event_match == "error"
+            then: cleanup
+          - else: ask_event_name        # ambiguous/not_found: akcija je vec ispisala poruku
+      - id: confirm_event
+        collect: event_confirmed
+        ask_before_filling: true
+        description: true ako korisnik potvrdi da je to taj događaj, false ako ne.
+        next:
+          - if: slots.event_confirmed
+            then: ask_notes
+          - else: reject_event
+      - id: reject_event
+        set_slots:
+          - event_name: null
+          - event_id: null
+          - event_confirmed: null
+        next: ask_event_name
+      - id: ask_notes
+        collect: notes
+        description: |
+          Opciona napomena uz rezervaciju. Ako korisnik kaže da nema napomenu
+          ("ne", "nemam", "bez napomene", "не", "немам", "без напомене", "не хвала"),
+          postavi vrednost "-" (crtica). Nikad ne ostavljaj prazno.
       - action: action_reserve_event
       - action: utter_reservation_action_result
-      - set_slots:
+      - id: cleanup
+        set_slots:
+          - event_name: null
           - event_id: null
+          - event_match: null
+          - event_confirmed: null
           - notes: null
 
   cancel_reservation:

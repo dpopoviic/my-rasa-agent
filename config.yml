@@ -12,6 +12,8 @@ pipeline: #kako se poruka korisnika obradjuje
 policies: # koja logika bira sledecu akciju u razgovoru
   - name: FlowPolicy #izvrsava definisanu poslovnu logiku iz flows.yml korak po korak
   - name: EnterpriseSearchPolicy #odgovara na pitanja iz dokumenata u ./docs (izvrsava SearchAndReply komandu)
+    prompt_template: prompts/enterprise_search_prompt.jinja2 #kopija Rasinog sablona + pravilo da odgovara samo na cirilici
+    max_history: 10
     vector_store:
       type: azure_search_store.AzureAISearch_Store #nasa klasa iz azure_search_store.py; parametri su u endpoints.yml (vector_store)
     llm:
