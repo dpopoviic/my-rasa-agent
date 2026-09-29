@@ -47,6 +47,17 @@ slots:
     mappings:
       - type: from_llm
 
+  # #primer sa validatorom, za proveru formata gresaka pri kucanju i slicno: 
+  #  phone_number:
+  #   type: text
+  #   mappings:
+  #     - type: from_llm
+  #   validation:
+  #     rejections:
+  #       - if: not (slots.phone_number matches "^\([0-9]{3}\) [0-9]{3}-[0-9]{4}$")
+  #         utter: utter_invalid_phone_number
+  #     refill_utter: "utter_refill_phone_number"
+  
   # --- Identifikatori nad kojima se izvršava akcija ---
   event_name:
     type: text
@@ -100,7 +111,7 @@ slots:
 responses:
   utter_ask_search_term:
     - text: "Шта бисте желели да пронађете? Реците назив, тему, или 'сви догађаји' ако желите комплетну листу."
-
+      # Moguce ej dodati transaltion: i u ovo redu jezik i prevod na tom jeziku
   utter_ask_start_date:
     - text: "Од ког датума да тражим догађаје? (нпр. 2026-10-01, или реците да вам није битно)"
 
@@ -154,6 +165,11 @@ responses:
   # pa je LLM birao pismo sam). Fiksan tekst, bez rephrase.
   utter_can_do_something_else:
     - text: "Да ли могу да Вам помогнем са још нечим?"
+
+  # Override ugradjenog odgovora iz pattern_human_handoff (original je engleski).
+  # Prebacivanje na zivog operatera jos ne postoji, pa samo obavestavamo korisnika.
+  utter_human_handoff_not_available:
+    - text: "Разумем да желите да разговарате са особом, али то тренутно није могуће. Могу да помогнем око претраге догађаја, доступности и резервација."
 
   utter_free_chitchat_response:
     - text: "placeholder"

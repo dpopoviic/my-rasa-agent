@@ -3,7 +3,8 @@
 Rasa svaki dogadjaj iz tracker store-a salje i event broker-u. Ovaj broker
 propusta samo `user` i `bot` dogadjaje, pa po poruci nastaje jedan red (~0,5 KB)
 umesto ~47 internih redova u tabeli `events`. Tabelu `events` Rasa i dalje koristi
-kao radnu memoriju i ona se periodicno brise; ChatMessages je trajna istorija.
+kao radnu memoriju; ChatMessages je trajna istorija. Broker pokrece i periodicno
+ciscenje starih redova iz obe tabele (history_cleanup.py).
 """
 
 from asyncio import AbstractEventLoop
@@ -17,6 +18,8 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from rasa.core.brokers.broker import EventBroker
 from rasa.core.tracker_stores.sql_tracker_store import SQLTrackerStore
 from rasa.utils.endpoints import EndpointConfig
+
+from history_cleanup import HistoryCleanup
 
 logger = structlog.get_logger()
 
@@ -53,6 +56,9 @@ class ChatMessageBroker(EventBroker):
         username: Optional[Text] = None,
         password: Optional[Text] = None,
         query: Optional[Dict] = None,
+        events_retention_hours: float = 24,
+        messages_retention_days: Optional[float] = 90,
+        cleanup_interval_minutes: float = 60,
         **kwargs: Any,
     ) -> None:
         # Isti nacin gradjenja konekcije kao SQLTrackerStore (podrzava query/driver za MSSQL)
@@ -63,6 +69,14 @@ class ChatMessageBroker(EventBroker):
         Base.metadata.create_all(self.engine)  # pravi tabelu ChatMessages ako ne postoji
         self.sessionmaker = sessionmaker(bind=self.engine)
         logger.debug("chat_message_broker.connected", db=db)
+
+        self.cleanup = HistoryCleanup(
+            self.engine,
+            events_retention_hours=events_retention_hours,
+            messages_retention_days=messages_retention_days,
+            interval_minutes=cleanup_interval_minutes,
+        )
+        self.cleanup.start()
 
     @classmethod
     async def from_endpoint_config(
@@ -101,4 +115,5 @@ class ChatMessageBroker(EventBroker):
             )
 
     async def close(self) -> None:
+        self.cleanup.stop()
         self.engine.dispose()

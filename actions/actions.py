@@ -7,13 +7,14 @@ clients for the internal API exposed by the .NET application
 (IEventCatalogService, IMyReservationsService) that used to be called
 in-process by the old Foundry agent tools are called here over HTTP instead.
 
-Identity: the acting user id is read from the incoming message's metadata
-(set by RasaChatbotConversationService on every call to the REST webhook),
-never from a slot - a slot could in principle be influenced by what the user
-types, metadata cannot. That id is forwarded as X-User-Id, alongside the
-shared-secret X-Internal-Api-Key, so InternalApiKeyHandler on the .NET side
-can build a ClaimsPrincipal for the request exactly as if it came from the
-signed-in user's own browser.
+Identity: the acting user is proven by a signed user token that the .NET app
+issues for every chat message (UserTokenService). The secure_rest channel
+(secure_rest_channel.py) verifies it and puts it into the message metadata;
+it is read from there, never from a slot - a slot could in principle be
+influenced by what the user types, metadata cannot. The token is forwarded as
+Authorization: Bearer, alongside the shared-secret X-Internal-Api-Key, and
+InternalApiKeyHandler on the .NET side verifies it again and takes the user id
+only from the token, so these actions cannot act for any other user.
 """
 import logging
 import calendar
@@ -59,16 +60,18 @@ def _log_failure(exc: requests.RequestException) -> None:
         )
 
 
-def _current_user_id(tracker: Tracker) -> Optional[Text]:
+def _current_user_token(tracker: Tracker) -> Optional[Text]:
+    # Metadata upisuje secure_rest kanal tek posto proveri token; poslednja poruka
+    # uvek nosi svez token (novi za svaku poruku), pa se ne cuva u slotu.
     metadata = (tracker.latest_message or {}).get("metadata") or {}
-    user_id = metadata.get("user_id")
-    return user_id or None
+    user_token = metadata.get("user_token")
+    return user_token or None
 
 
-def _headers(user_id: Text) -> Dict[Text, Text]:
+def _headers(user_token: Text) -> Dict[Text, Text]:
     return {
         "X-Internal-Api-Key": INTERNAL_API_KEY,
-        "X-User-Id": user_id,
+        "Authorization": f"Bearer {user_token}",
     }
 
 
@@ -133,8 +136,8 @@ class ActionSearchEvents(Action):
         tracker: Tracker,
         domain: Dict[Text, Any],
     ) -> List[Dict[Text, Any]]:
-        user_id = _current_user_id(tracker)
-        if not user_id:
+        user_token = _current_user_token(tracker)
+        if not user_token:
             return [SlotSet("events_search_result", NOT_SIGNED_IN_MESSAGE)]
 
         # Slotove popunjava LLM iz slobodnog teksta ("ne", "nije bitno", "svi
@@ -164,7 +167,7 @@ class ActionSearchEvents(Action):
             response = requests.get(
                 f"{INTERNAL_API_BASE_URL}/api/internal/events/search",
                 params=params,
-                headers=_headers(user_id),
+                headers=_headers(user_token),
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 verify=VERIFY_SSL,
             )
@@ -215,8 +218,8 @@ class ActionResolveEvent(Action):
         tracker: Tracker,
         domain: Dict[Text, Any],
     ) -> List[Dict[Text, Any]]:
-        user_id = _current_user_id(tracker)
-        if not user_id:
+        user_token = _current_user_token(tracker)
+        if not user_token:
             dispatcher.utter_message(text=NOT_SIGNED_IN_MESSAGE)
             return [SlotSet("event_match", "error")]
 
@@ -228,7 +231,7 @@ class ActionResolveEvent(Action):
             response = requests.get(
                 f"{INTERNAL_API_BASE_URL}/api/internal/events/resolve",
                 params={"name": term},
-                headers=_headers(user_id),
+                headers=_headers(user_token),
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 verify=VERIFY_SSL,
             )
@@ -272,8 +275,8 @@ class ActionGetEventAvailability(Action):
         tracker: Tracker,
         domain: Dict[Text, Any],
     ) -> List[Dict[Text, Any]]:
-        user_id = _current_user_id(tracker)
-        if not user_id:
+        user_token = _current_user_token(tracker)
+        if not user_token:
             return [SlotSet("event_availability_result", NOT_SIGNED_IN_MESSAGE)]
 
         event_id = _as_int(tracker.get_slot("event_id"))
@@ -286,7 +289,7 @@ class ActionGetEventAvailability(Action):
         try:
             response = requests.get(
                 f"{INTERNAL_API_BASE_URL}/api/internal/events/{event_id}/availability",
-                headers=_headers(user_id),
+                headers=_headers(user_token),
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 verify=VERIFY_SSL,
             )
@@ -329,14 +332,14 @@ class ActionListMyReservations(Action):
         tracker: Tracker,
         domain: Dict[Text, Any],
     ) -> List[Dict[Text, Any]]:
-        user_id = _current_user_id(tracker)
-        if not user_id:
+        user_token = _current_user_token(tracker)
+        if not user_token:
             return [SlotSet("my_reservations_result", NOT_SIGNED_IN_MESSAGE)]
 
         try:
             response = requests.get(
                 f"{INTERNAL_API_BASE_URL}/api/internal/reservations",
-                headers=_headers(user_id),
+                headers=_headers(user_token),
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 verify=VERIFY_SSL,
             )
@@ -372,8 +375,8 @@ class ActionReserveEvent(Action):
         tracker: Tracker,
         domain: Dict[Text, Any],
     ) -> List[Dict[Text, Any]]:
-        user_id = _current_user_id(tracker)
-        if not user_id:
+        user_token = _current_user_token(tracker)
+        if not user_token:
             return [SlotSet("reservation_action_result", NOT_SIGNED_IN_MESSAGE)]
 
         event_id = _as_int(tracker.get_slot("event_id"))
@@ -389,7 +392,7 @@ class ActionReserveEvent(Action):
             response = requests.post(
                 f"{INTERNAL_API_BASE_URL}/api/internal/reservations",
                 json={"eventId": event_id, "notes": notes},
-                headers=_headers(user_id),
+                headers=_headers(user_token),
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 verify=VERIFY_SSL,
             )
@@ -417,8 +420,8 @@ class ActionCancelReservation(Action):
         tracker: Tracker,
         domain: Dict[Text, Any],
     ) -> List[Dict[Text, Any]]:
-        user_id = _current_user_id(tracker)
-        if not user_id:
+        user_token = _current_user_token(tracker)
+        if not user_token:
             return [SlotSet("reservation_action_result", NOT_SIGNED_IN_MESSAGE)]
 
         reservation_id = _as_int(tracker.get_slot("reservation_id"))
@@ -431,7 +434,7 @@ class ActionCancelReservation(Action):
         try:
             response = requests.delete(
                 f"{INTERNAL_API_BASE_URL}/api/internal/reservations/{reservation_id}",
-                headers=_headers(user_id),
+                headers=_headers(user_token),
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 verify=VERIFY_SSL,
             )

@@ -90,6 +90,12 @@ flows:
     steps:
       - action: action_list_my_reservations
       - action: utter_my_reservations_result
+      #primer validacije u flow:
+      # - collect: phone_number
+      #   description: "User's phone number in (xxx) xxx-xxxx format"
+      #   rejections:
+      #   - if: not ( slots.phone_number matches "^\([0-9]{3}\) [0-9]{3}-[0-9]{4}$" )
+      #     utter: utter_invalid_phone_number
 
   reserve_event:
     description: |
