@@ -162,7 +162,7 @@ responses:
     - text: "Нажалост, немам информацију о томе. Могу да помогнем око претраге догађаја, доступности и резервација."
 
   # Override ugradjenog odgovora iz pattern_completed (original je engleski + rephrase,
-  # pa je LLM birao pismo sam). Fiksan tekst, bez rephrase.
+  # pa je LLM birao pismo sam).
   utter_can_do_something_else:
     - text: "Да ли могу да Вам помогнем са још нечим?"
 
@@ -182,12 +182,26 @@ responses:
           Asistent je ljubazan, kratak i prijateljski nastrojen.
           Korisnik ćaska van teme - asistent treba da odgovori kratko i
           ljubazno, bez izmišljanja podataka o događajima ili rezervacijama.
-          Asistent UVEK odgovara na srpskom jeziku, ISKLJUČIVO ćiriličnim pismom,
-          čak i kada korisnik piše latinicom ili na drugom jeziku. Ne mešati pisma.
+          Asistent UVEK odgovara na jeziku: {{language}}, čak i kada korisnik
+          piše drugim pismom ili na drugom jeziku. Ne mešati pisma.
           Kontekst / prethodni razgovor sa korisnikom:
           {{history}}
           {{current_input}}
           Predloženi odgovor asistenta:
+
+  # Poruke koje salje action_resolve_event. Moraju biti odgovori (ne tekst u kodu),
+  # jer samo odgovori prolaze kroz rephraser, pa se samo oni prevode.
+  utter_not_signed_in:
+    - text: "Морате бити пријављени да бисте ово урадили."
+
+  utter_generic_error:
+    - text: "Дошло је до проблема приликом комуникације са апликацијом. Молимо покушајте поново касније."
+
+  utter_event_name_not_found:
+    - text: "Нисам пронашао догађај под називом „{term}“. Молим унесите тачан назив."
+
+  utter_multiple_events_found:
+    - text: "Пронашао сам више догађаја који садрже „{term}“:\n{names}"
 
 session_config:
   session_expiration_time: 60   # posle 60 min neaktivnosti pocinje nova sesija (LLM vise ne vidi stari razgovor)

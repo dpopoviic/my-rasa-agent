@@ -10,8 +10,10 @@ action_endpoint:
 # Allow rephrasing of responses using a Rasa-hosted model
 nlg:
   type: rephrase
-  # Rasin podrazumevani prompt + pravilo da preformulisani odgovori budu samo na cirilici
-  # (vazi za sve odgovore sa rephrase: True, npr. ugradjene engleske iz pattern-a)
+  # Rasin podrazumevani prompt + pravilo da odgovor bude na jeziku razgovora ({{language}})
+  # rephrase_all: svaki odgovor prolazi kroz LLM i prevodi se na jezik iz slota `language`
+  # (odgovor sa `rephrase: false` u metadata ide doslovno, bez prevoda)
+  rephrase_all: true
   prompt_template: prompts/rephraser_prompt.jinja2
   llm:
     model_group: azure_llm_deployments

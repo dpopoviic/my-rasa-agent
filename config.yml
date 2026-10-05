@@ -1,5 +1,9 @@
 recipe: default.v1 #koja se verzija formata korsiti za parsiranje konfiguracije
-language: sr #koji je jezik koji agent za nlu koristi
+# Podrazumevani jezik + ostali jezici (BCP 47). Rasa od njih pravi slot `language`;
+# odgovore na taj jezik prevodi rephraser (rephrase_all u endpoints.yml).
+# Novi jezik = dodaj kod u additional_languages.
+language: sr-Cyrl
+additional_languages: [en]
 assistant_id: square-circuit # ID koji identifikuje agenta
 pipeline: #kako se poruka korisnika obradjuje
   # Varijanta command generatora koja pored StartFlow/SetSlot... zna i komandu SearchAndReply
@@ -12,7 +16,7 @@ pipeline: #kako se poruka korisnika obradjuje
 policies: # koja logika bira sledecu akciju u razgovoru
   - name: FlowPolicy #izvrsava definisanu poslovnu logiku iz flows.yml korak po korak
   - name: EnterpriseSearchPolicy #odgovara na pitanja iz dokumenata u ./docs (izvrsava SearchAndReply komandu)
-    prompt_template: prompts/enterprise_search_prompt.jinja2 #kopija Rasinog sablona + pravilo da odgovara samo na cirilici
+    prompt_template: prompts/enterprise_search_prompt.jinja2 #kopija Rasinog sablona + pravilo da odgovara na jeziku razgovora (slot language)
     max_history: 10
     vector_store:
       type: azure_search_store.AzureAISearch_Store #nasa klasa iz azure_search_store.py; parametri su u endpoints.yml (vector_store)

@@ -1,3 +1,16 @@
+{# Jezik razgovora je ugradjeni slot `language` (BCP 47 kod iz config.yml, npr. sr-Cyrl, en).
+   Ovaj odgovor NE prolazi kroz rephraser (salje ga action_send_text), pa jezik odredjuje
+   samo ovaj prompt. LLM bolje postuje puno ime jezika nego kod, zato mapa ispod.
+   Novi jezik u config.yml -> dodaj ga i ovde. Izmena prompta trazi `rasa train`. #}
+{% set answer_language_code = (slots | selectattr("name", "equalto", "language") | map(attribute="value") | first) | default("sr-Cyrl", true) %}
+{% set language_names = {
+    "sr-Cyrl": "Serbian, written in Cyrillic script (ћирилица)",
+    "sr-Latn": "Serbian, written in Latin script (latinica)",
+    "en": "English"
+} %}
+{% set answer_language = language_names.get(answer_language_code, answer_language_code) %}
+IMPORTANT: Your entire answer MUST be written in {{ answer_language }}, regardless of the language or script of the user's message, the conversation or the documents.
+
 {% if check_relevancy %}Based on the provided documents and the recent conversation context, answer the following question.
 Before responding, ensure the answer is directly supported by the documents or context.
 Do not make assumptions or infer beyond the given information.
@@ -71,11 +84,12 @@ If you are unable to find an answer in the given relevant documents, do not cite
 {% endif %}
 
 ### Language and Script
-- Always answer in Serbian, written ONLY in the Cyrillic script (ћирилица).
-- This applies even if the user writes in Latin script (latinica) or in another language, and even if parts of the documents are in Latin script.
-- Transliterate any Serbian Latin text taken from the documents into Cyrillic (e.g. "Poništi ovlašćeno lice" -> "Поништи овлашћено лице").
-- Keep button, menu and field names exactly as they appear in the documents (in quotes), only converted to Cyrillic if needed.
-- Do not mix scripts within the answer. Only URLs, e-mail addresses and codes may stay in Latin characters.
+- Answer language: {{ answer_language }}.
+- This applies even if the user writes in another script or language, and even if the documents are in another script or language.
+- Translate or transliterate any text taken from the documents into that language and script.
+- Keep button, menu and field names as they appear in the documents (in quotes), only converted to that script if needed.
+- Do not mix scripts within the answer. Only URLs, e-mail addresses and codes may stay unchanged.
 - The marker [NO_RAG_ANSWER] is a technical signal, not an answer: if you need it, write it exactly as shown, in Latin characters.
 
+Reminder: write the answer in {{ answer_language }} only.
 Your answer:

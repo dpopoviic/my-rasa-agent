@@ -34,7 +34,7 @@ INTERNAL_API_BASE_URL = os.environ.get(
 ).rstrip("/")
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "")
 REQUEST_TIMEOUT_SECONDS = 10
-# false samo u razvoju (ASP.NET dev sertifikat); vidi .env
+
 VERIFY_SSL = os.environ.get("INTERNAL_API_VERIFY_SSL", "true").lower() != "false"
 
 NOT_SIGNED_IN_MESSAGE = "Морате бити пријављени да бисте ово урадили."
@@ -220,7 +220,7 @@ class ActionResolveEvent(Action):
     ) -> List[Dict[Text, Any]]:
         user_token = _current_user_token(tracker)
         if not user_token:
-            dispatcher.utter_message(text=NOT_SIGNED_IN_MESSAGE)
+            dispatcher.utter_message(response="utter_not_signed_in")
             return [SlotSet("event_match", "error")]
 
         term = _clean_text(tracker.get_slot("event_name"))
@@ -239,16 +239,14 @@ class ActionResolveEvent(Action):
             candidates = response.json() or []
         except requests.RequestException as exc:
             _log_failure(exc)
-            dispatcher.utter_message(text=GENERIC_ERROR_MESSAGE)
+            dispatcher.utter_message(response="utter_generic_error")
             return [SlotSet("event_match", "error")]
 
         if len(candidates) == 1:
             return _event_found(candidates[0], "found")
 
         if not candidates:
-            dispatcher.utter_message(
-                text=f"Нисам пронашао догађај под називом „{term}“. Молим унесите тачан назив."
-            )
+            dispatcher.utter_message(response="utter_event_name_not_found", term=term)
             return [SlotSet("event_match", "not_found"), SlotSet("event_name", None)]
 
         # Vise kandidata: ako je tacno jedan bio u poslednjem prikazanom spisku, trazimo potvrdu.
@@ -260,9 +258,7 @@ class ActionResolveEvent(Action):
         names = "\n".join(
             f"- {c.get('name')} ({str(c.get('startDate', ''))[:10]})" for c in candidates
         )
-        dispatcher.utter_message(
-            text=f"Пронашао сам више догађаја који садрже „{term}“:\n{names}"
-        )
+        dispatcher.utter_message(response="utter_multiple_events_found", term=term, names=names)
         return [SlotSet("event_match", "ambiguous"), SlotSet("event_name", None)]
 
 class ActionGetEventAvailability(Action):

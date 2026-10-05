@@ -11,9 +11,11 @@ Provere:
 2. `sub` iz tokena mora biti isti kao `sender` poruke (ili sender_id u putanji),
    pa se ne moze poslati poruka u tudji razgovor.
 
-Metadata poruke pravi kanal sam, iz proverenog tokena ({user_id, user_token}),
-a sve sto je klijent poslao u "metadata" se ignorise. Akcije (actions/actions.py)
-prosledjuju user_token .NET internom API-ju, koji ga ponovo proverava.
+Metadata poruke pravi kanal sam, iz proverenog tokena ({user_id, user_token}).
+Od onoga sto je klijent poslao u "metadata" prihvata se samo "language", i to
+samo jezik iz config.yml - Rasa ga na pocetku sesije upisuje u slot `language`.
+Akcije (actions/actions.py) prosledjuju user_token .NET internom API-ju, koji
+ga ponovo proverava.
 """
 
 import os
@@ -26,6 +28,7 @@ from sanic.request import Request
 
 from rasa.core.channels.channel import OnNewMessageType
 from rasa.core.channels.rest import RestInput
+from rasa.shared.utils.yaml import read_yaml_file
 
 logger = structlog.get_logger()
 
@@ -54,6 +57,8 @@ class SecureRestInput(RestInput):
         super().__init__()
         # Ucitava se pri startu - bez javnog kljuca Rasa ne treba ni da se podigne
         self.public_key = _load_public_key()
+        config = read_yaml_file("config.yml")
+        self.languages = {config["language"], *(config.get("additional_languages") or [])}
 
     def _verify_token(self, token: Text) -> Optional[Text]:
         """Vraca user id (sub) iz ispravnog tokena, inace None."""
@@ -73,11 +78,16 @@ class SecureRestInput(RestInput):
         return claims.get("sub") or None
 
     def get_metadata(self, request: Request) -> Optional[Dict[Text, Any]]:
-        # Samo provereni podaci iz middleware-a, nikad metadata iz tela zahteva
-        return {
+        # Provereni podaci iz middleware-a; iz tela zahteva samo poznat jezik
+        metadata = {
             "user_id": request.ctx.user_id,
             "user_token": request.ctx.user_token,
         }
+        client_metadata = (request.json or {}).get("metadata") or {}
+        language = client_metadata.get("language") if isinstance(client_metadata, dict) else None
+        if isinstance(language, str) and language in self.languages:
+            metadata["language"] = language
+        return metadata
 
     def _extract_input_channel(self, req: Request) -> Text:
         return self.name()
