@@ -13,8 +13,11 @@ flows:
       godinu (npr. "u 2026. godini"), upiši je u search_year, a search_month
       ostavi prazno. start_date/end_date koristi samo za konkretne datume
       koje je korisnik naveo (npr. "od 5. do 10. oktobra 2026").
-      Ako korisnik upise naziv grada u nekom padežu (npr. "u Beogradu"), 
+      Ako korisnik upise naziv grada u nekom padežu (npr. "u Beogradu"),
       prebaci ga u nominativ (npr. "Beograd") i pretraži kao location.
+      Samo za običan spisak događaja. Ako korisnik traži plan, raspored,
+      poređenje, preporuku, proveru preklapanja ili bilo šta što zahteva
+      razmišljanje nad rezultatima pretrage, koristi complex_event_request.
     steps:
       - collect: search_term
         ask_before_filling: false
@@ -87,6 +90,9 @@ flows:
     description: |
       Koristi ovaj flow kada korisnik želi da vidi SVOJE rezervacije
       (npr. "koje rezervacije imam", "prikaži moje rezervacije").
+      Samo za običan spisak rezervacija. Ako korisnik želi da ih poredi sa
+      drugim događajima, proveri preklapanja ili napravi plan oko njih,
+      koristi complex_event_request.
     steps:
       - action: action_list_my_reservations
       - action: utter_my_reservations_result

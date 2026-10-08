@@ -48,6 +48,17 @@ model_groups:
     router:
       routing_strategy: simple-shuffle
 
+  # LLM za ReAct sub agenta event_assistant (sub_agents/event_assistant/config.yml).
+  # Posebna grupa da bi agent mogao da dobije jaci model bez menjanja ostatka bota.
+  - id: agent_llm
+    models:
+      - provider: azure
+        deployment: gpt-5-mini-2
+        api_base: https://dp-20220322-foundry.services.ai.azure.com/
+        api_version: "2025-04-01-preview"
+        api_key: ${AZURE_API_KEY}
+        timeout: 60                           # sekundi po jednom LLM pozivu agenta
+
   # Embedding model: potreban EnterpriseSearchPolicy-ju za pretragu dokumenata.
   # TODO: upisi ime svog embedding deployment-a iz Azure-a i proveri api_base/api_version.
   - id: azure_embeddings
@@ -57,6 +68,18 @@ model_groups:
         api_base: https://dp-20220322-foundry.services.ai.azure.com/
         api_version: "2024-02-01"
         api_key: ${AZURE_API_KEY}
+
+# MCP server sa alatima za ReAct agenta (mcp_tools/server.py - mora biti pokrenut uz Rasu:
+# python -m mcp_tools.server). Rasa salje MCP_API_KEY u X-Mcp-Api-Key zaglavlju;
+# token korisnika ide posebno, u _meta svakog poziva (event_assistant_agent.py).
+mcp_servers:
+  - name: event_tools
+    url: http://localhost:8765/mcp
+    type: http
+    # Auth kljucevi idu direktno ovde (Rasa ih sama skuplja u additional_params)
+    api_key: ${MCP_API_KEY}
+    header_name: X-Mcp-Api-Key
+    header_format: "{key}"
 
 # Istorija razgovora: SQLTrackerStore u LocalDB bazi RasaTracker (tabele events i users pravi Rasa)
 tracker_store:

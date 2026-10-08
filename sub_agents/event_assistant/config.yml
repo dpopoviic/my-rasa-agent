@@ -1,0 +1,29 @@
+# ReAct sub agent za zahteve za koje ne postoji flow: kombinovanje vise podataka,
+# planiranje, poredjenje, preklapanja termina... Samo CITA podatke (alati u
+# mcp_tools/server.py); rezervacije i otkazivanja ostaju u flow-ovima.
+# Poziva ga flow `complex_event_request` (data/flows.yml) korakom `call: event_assistant`.
+agent:
+  name: event_assistant
+  protocol: RASA
+  description: |
+    Answer the user's request about events and their own reservations that
+    requires combining, comparing or reasoning over several pieces of data -
+    for example planning a schedule of events without time overlaps, finding
+    which events fit around existing reservations, or comparing events by
+    date, location or free places. Gather the data with the available tools,
+    reason over it, and give the user a complete, well-structured answer.
+    You can only read data; you cannot create, change or cancel reservations.
+
+configuration:
+  module: event_assistant_agent.EventAssistantAgent  # prosirenje: token korisnika -> _meta MCP poziva
+  llm:
+    model_group: agent_llm                    # endpoints.yml; zameni model tamo kad dobijes jaci
+  prompt_template: prompts/event_assistant_prompt.jinja2
+  include_date_time: true                     # agent zna danasnji datum (za "sledeci mesec" i sl.)
+  timezone: Europe/Belgrade
+  enable_filler_messages: false               # REST kanal vraca sve poruke odjednom, "trenutak..." nema smisla
+  tool_timeout: 20                            # sekundi po pozivu alata
+
+connections:
+  mcp_servers:
+    - name: event_tools                       # definisan u endpoints.yml (mcp_servers)

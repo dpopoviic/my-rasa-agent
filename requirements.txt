@@ -1,0 +1,4 @@
+# event_assistant_agent.py prepisuje interni Rasa metod (_get_meta_for_mcp_server),
+# pa se rasa-pro ne nadogradjuje na 3.20+ bez provere (unit_tests/test_event_assistant_agent.py).
+# mcp, httpx i python-dotenv (mcp_tools/server.py) dolaze uz rasa-pro.
+rasa-pro>=3.19.4,<3.20
