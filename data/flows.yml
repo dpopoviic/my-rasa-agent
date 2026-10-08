@@ -147,6 +147,42 @@ flows:
           - event_confirmed: null
           - notes: null
 
+  complex_event_request:
+    description: |
+      Koristi ovaj flow kada zahtev korisnika o događajima ili njegovim
+      rezervacijama zahteva kombinovanje, poređenje ili razmišljanje nad
+      podacima, a nijedan drugi flow ga ne pokriva u potpunosti. Primeri:
+      plan događaja za neki period bez preklapanja termina; koji događaji se
+      uklapaju uz moje postojeće rezervacije; poređenje događaja po datumu,
+      mestu ili broju slobodnih mesta; preporuka događaja po nekom kriterijumu;
+      pitanja za koja treba više pretraga.
+      NE koristi ga za običan spisak događaja (search_events), dostupnost
+      jednog događaja (check_event_availability), spisak mojih rezervacija
+      (list_my_reservations), niti za kreiranje ili otkazivanje rezervacije
+      (reserve_event, cancel_reservation).
+    steps:
+      # ReAct sub agent (sub_agents/event_assistant) - samo cita podatke preko
+      # MCP alata (mcp_tools/server.py). Bez exit_if: agent sam zavrsava
+      # pozivom task_completed, zajedno sa punim odgovorom.
+      - call: event_assistant
+
+  change_language:
+    description: |
+      Koristi ovaj flow SAMO kada korisnik izričito traži da mu asistent
+      odgovara na drugom jeziku ili pismu, npr. "odgovaraj mi na srpskom",
+      "piši ćirilicom", "odgovaraj mi na latinici", "odgovaraj na engleskom",
+      "answer in English", "switch to Serbian". NE koristi ga samo zato što je
+      korisnik napisao poruku na nekom jeziku ili pismu.
+    steps:
+      - collect: requested_language
+        ask_before_filling: false
+        description: |
+          serbian_cyrillic - srpski ćirilicom; i kada korisnik samo kaže "na
+          srpskom" ili "ćirilicom". serbian_latin - srpski latinicom ("na
+          latinici", "latinicom"). english - engleski ("na engleskom", "in English").
+      - action: action_set_language
+      - action: utter_language_changed
+
   cancel_reservation:
     description: |
       Koristi ovaj flow kada korisnik želi da otkaže jednu od SVOJIH

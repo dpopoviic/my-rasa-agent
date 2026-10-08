@@ -446,3 +446,33 @@ class ActionCancelReservation(Action):
             message = result.get("message") or "Отказивање резервације није успело."
 
         return [SlotSet("reservation_action_result", message)]
+
+
+# Vrednosti slota requested_language (domain.yml) -> kodovi jezika iz config.yml
+REQUESTED_LANGUAGE_CODES = {
+    "serbian_cyrillic": "sr-Cyrl",
+    "serbian_latin": "sr-Latn",
+    "english": "en",
+}
+
+
+class ActionSetLanguage(Action):
+    """Flow change_language: postavlja ugradjeni slot `language` na jezik koji je
+    korisnik izricito trazio. Rephraser, EnterpriseSearch i event_assistant ga citaju
+    iz tog slota. Na pocetku nove sesije Rasa ga ponovo uzima iz metadata aplikacije."""
+
+    def name(self) -> Text:
+        return "action_set_language"
+
+    def run(
+        self,
+        dispatcher: CollectingDispatcher,
+        tracker: Tracker,
+        domain: Dict[Text, Any],
+    ) -> List[Dict[Text, Any]]:
+        language = REQUESTED_LANGUAGE_CODES.get(tracker.get_slot("requested_language"))
+        # requested_language se brise da bi sledeci zahtev za promenu ponovo bio popunjen
+        events = [SlotSet("requested_language", None)]
+        if language:
+            events.insert(0, SlotSet("language", language))
+        return events

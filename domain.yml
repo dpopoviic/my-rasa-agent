@@ -7,6 +7,7 @@ actions:
   - action_list_my_reservations
   - action_reserve_event
   - action_cancel_reservation
+  - action_set_language
 
 slots:
   # --- Filteri za pretragu događaja (opcioni, LLM ih popunjava iz poruke) ---
@@ -86,6 +87,18 @@ slots:
       - type: from_llm
   notes:
     type: text
+    mappings:
+      - type: from_llm
+
+  # --- Jezik koji je korisnik izricito trazio (flow change_language) ---
+  # Ugradjeni slot `language` nema mappings, pa ga LLM ne moze postaviti; LLM puni
+  # ovaj slot, a action_set_language iz njega postavlja `language`.
+  requested_language:
+    type: categorical
+    values:
+      - serbian_cyrillic
+      - serbian_latin
+      - english
     mappings:
       - type: from_llm
 
@@ -170,6 +183,14 @@ responses:
   # Prebacivanje na zivog operatera jos ne postoji, pa samo obavestavamo korisnika.
   utter_human_handoff_not_available:
     - text: "Разумем да желите да разговарате са особом, али то тренутно није могуће. Могу да помогнем око претраге догађаја, доступности и резервација."
+
+  # Flow change_language. Salje se posle action_set_language, pa ga rephraser vec
+  # prevodi na novi jezik.
+  utter_ask_requested_language:
+    - text: "На ком језику желите да Вам одговарам: српски ћирилицом, српски латиницом или енглески?"
+
+  utter_language_changed:
+    - text: "У реду, од сада ћу Вам одговарати на овом језику. Како могу да Вам помогнем?"
 
   utter_free_chitchat_response:
     - text: "placeholder"

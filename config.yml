@@ -1,9 +1,10 @@
 recipe: default.v1 #koja se verzija formata korsiti za parsiranje konfiguracije
 # Podrazumevani jezik + ostali jezici (BCP 47). Rasa od njih pravi slot `language`;
 # odgovore na taj jezik prevodi rephraser (rephrase_all u endpoints.yml).
-# Novi jezik = dodaj kod u additional_languages.
+# Novi jezik = dodaj kod u additional_languages (i u requested_language / action_set_language,
+# i u mape jezika u prompts/*.jinja2).
 language: sr-Cyrl
-additional_languages: [en]
+additional_languages: [en, sr-Latn]
 assistant_id: square-circuit # ID koji identifikuje agenta
 pipeline: #kako se poruka korisnika obradjuje
   # Varijanta command generatora koja pored StartFlow/SetSlot... zna i komandu SearchAndReply
