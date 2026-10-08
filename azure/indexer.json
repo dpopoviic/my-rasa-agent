@@ -1,0 +1,27 @@
+{
+  "name": "rag-1790004221586-mss-stud-proj-indexer",
+  "description": null,
+  "dataSourceName": "rag-1790004221586-mss-stud-proj-datasource",
+  "skillsetName": "rag-1790004221586-mss-stud-proj-skillset",
+  "targetIndexName": "rag-1790004221586-mss-stud-proj",
+  "disabled": null,
+  "schedule": null,
+  "parameters": {
+    "batchSize": null,
+    "maxFailedItems": null,
+    "maxFailedItemsPerBatch": null,
+    "base64EncodeKeys": null,
+    "configuration": {
+      "parsingMode": "default"
+    }
+  },
+  "fieldMappings": [
+    {
+      "sourceFieldName": "metadata_storage_name",
+      "targetFieldName": "title",
+      "mappingFunction": null
+    }
+  ],
+  "outputFieldMappings": [],
+  "encryptionKey": null
+}

@@ -1,0 +1,98 @@
+{
+  "name": "rag-1790004221586-mss-stud-proj-skillset",
+  "description": "Skillset to chunk documents and generate embeddings",
+  "skills": [
+    {
+      "@odata.type": "#Microsoft.Skills.Text.SplitSkill",
+      "name": "#1",
+      "description": "Split skill to chunk documents",
+      "context": "/document",
+      "defaultLanguageCode": "en",
+      "textSplitMode": "pages",
+      "maximumPageLength": 2000,
+      "pageOverlapLength": 500,
+      "maximumPagesToTake": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "source": "/document/content",
+          "sourceContext": null,
+          "inputs": []
+        }
+      ],
+      "outputs": [
+        {
+          "name": "textItems",
+          "targetName": "pages"
+        }
+      ]
+    },
+    {
+      "@odata.type": "#Microsoft.Skills.Text.AzureOpenAIEmbeddingSkill",
+      "name": "#2",
+      "description": null,
+      "context": "/document/pages/*",
+      "resourceUri": "https://dp-20220322-foundry.openai.azure.com",
+      "apiKey": "<redacted>",
+      "deploymentId": "text-embedding-3-small",
+      "dimensions": 1536,
+      "modelName": "text-embedding-3-small",
+      "inputs": [
+        {
+          "name": "text",
+          "source": "/document/pages/*",
+          "sourceContext": null,
+          "inputs": []
+        }
+      ],
+      "outputs": [
+        {
+          "name": "embedding",
+          "targetName": "text_vector"
+        }
+      ],
+      "authIdentity": null
+    }
+  ],
+  "cognitiveServices": null,
+  "knowledgeStore": null,
+  "indexProjections": {
+    "selectors": [
+      {
+        "targetIndexName": "rag-1790004221586-mss-stud-proj",
+        "parentKeyFieldName": "parent_id",
+        "sourceContext": "/document/pages/*",
+        "mappings": [
+          {
+            "name": "text_vector",
+            "source": "/document/pages/*/text_vector",
+            "sourceContext": null,
+            "inputs": []
+          },
+          {
+            "name": "chunk",
+            "source": "/document/pages/*",
+            "sourceContext": null,
+            "inputs": []
+          },
+          {
+            "name": "title",
+            "source": "/document/title",
+            "sourceContext": null,
+            "inputs": []
+          },
+          {
+            "name": "access_group",
+            "source": "/document/access_group",
+            "sourceContext": null,
+            "inputs": []
+          }
+        ]
+      }
+    ],
+    "parameters": {
+      "projectionMode": "skipIndexingParentDocuments"
+    }
+  },
+  "encryptionKey": null
+}

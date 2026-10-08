@@ -33,6 +33,17 @@ vector_store:
   top_k: 4
   #vector_field i semantic_configuration obezbedjuju da se pretraga podataka vrsi semanticki a ne samo po kljucnoj reci.
 
+  # Pristup po ulogama: svaki deo dokumenta u indeksu ima grupu u polju filter_field
+  # (metadata `access_group` na PDF-u u Blob Storage-u -> indexer je kopira na svaki deo).
+  # role_groups: koje grupe koja uloga (iz .NET Identity, velika/mala slova su bitna) sme da cita.
+  # Korisnik sa vise uloga dobija uniju grupa. "*" = sve, ukljucujuci dokumente bez grupe.
+  # Uloga koje nema ovde ne vidi nista. Grupe: mala slova, cifre, - i _.
+  # Izmena trazi restart Rase (ne treba rasa train).
+  filter_field: access_group
+  role_groups:
+    Administrator: ["*"]
+    Customer: [public, customer]
+
 # Kljucevi se citaju iz .env fajla (${NAZIV_PROMENLJIVE}), ne upisuju se ovde.
 model_groups:
   # Tekstualni LLM: command generator, EnterpriseSearchPolicy i rephraser
