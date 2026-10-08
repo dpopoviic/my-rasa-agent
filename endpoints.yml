@@ -20,17 +20,23 @@ nlg:
   summarize_history: false
   max_historical_turns: 10
 
-# Baza znanja za EnterpriseSearchPolicy: Azure AI Search indeks (implementacija: azure_search_store.py)
+# Baza znanja za EnterpriseSearchPolicy: Azure AI Search indeks (implementacija: azure_search_store.py),
+# iza filtera po ulogama (role_filtered_store.py) - korisnik dobija samo dokumente koje njegove
+# uloge smeju da citaju, po pravilima iz knowledge_access.yml.
 vector_store:
-  type: azure_search_store.AzureAISearch_Store
+  type: role_filtered_store.RoleFilteredStore        # mora biti isto kao vector_store.type u config.yml
+  inner_type: azure_search_store.AzureAISearch_Store # pravi store; za drugi store menja se ovo + njegova podesavanja ispod
+  access_rules: knowledge_access.yml                 # ko sme sta da cita (menja se bez restarta Rase)
+  max_results: 4                                     # koliko delova dokumenata najvise ide LLM-u, posle filtriranja
+  # --- sve ispod ide pravom store-u (azure_search_store.py) ---
   endpoint: ${AZURE_SEARCH_ENDPOINT}        # npr. https://<naziv-search-resursa>.search.windows.net
   index_name: ${AZURE_SEARCH_INDEX}         # naziv indeksa
   api_key: ${AZURE_SEARCH_API_KEY}          # Query key (dovoljan je read-only) iz Azure portala
   content_field: chunk                      # polje sa tekstom (u tvom indeksu 'chunk' je popunjen, 'content' je prazan u svih 29 dokumenata)
-  metadata_fields: [title]                  # opciono, npr. [title, source]
+  metadata_fields: [title]                  # title je OBAVEZAN - po njemu filter po ulogama prepoznaje dokument (match_field u knowledge_access.yml)
   semantic_configuration: rag-1790004221586-mss-stud-proj-semantic-configuration        # opciono: ime semantic konfiguracije iz indeksa
   vector_field: text_vector             # opciono: ukljucuje hibridnu pretragu (koristi azure_embeddings)
-  top_k: 4
+  top_k: 12                                 # vise od max_results: deo rezultata filter odbaci (tudji dokumenti)
   #vector_field i semantic_configuration obezbedjuju da se pretraga podataka vrsi semanticki a ne samo po kljucnoj reci.
 
 # Kljucevi se citaju iz .env fajla (${NAZIV_PROMENLJIVE}), ne upisuju se ovde.

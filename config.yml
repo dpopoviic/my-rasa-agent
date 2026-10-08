@@ -20,7 +20,7 @@ policies: # koja logika bira sledecu akciju u razgovoru
     prompt_template: prompts/enterprise_search_prompt.jinja2 #kopija Rasinog sablona + pravilo da odgovara na jeziku razgovora (slot language)
     max_history: 10
     vector_store:
-      type: azure_search_store.AzureAISearch_Store #nasa klasa iz azure_search_store.py; parametri su u endpoints.yml (vector_store)
+      type: role_filtered_store.RoleFilteredStore #filter po ulogama oko azure_search_store.py; parametri i pravi store su u endpoints.yml (vector_store)
     llm:
       model_group: azure_llm_deployments #model koji pise odgovor iz pronadjenih delova dokumenata
     embeddings:

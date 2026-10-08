@@ -1,0 +1,23 @@
+# Ko sme da cita koji dokument iz baze znanja (koristi role_filtered_store.py).
+#
+# - Dokument se prepoznaje po polju match_field iz metadata pronadjenog dela
+#   (title = ime PDF fajla u Azure indeksu).
+# - admin_roles vide sve dokumente, bez pravila.
+# - Pravila se proveravaju redom; PRVO koje odgovara odlucuje. Konkretna pravila
+#   idu gore, opsta ("*") dole. U match su dozvoljeni * i ? kao u imenima fajlova.
+# - Dokument za koji nema pravila vide samo admin_roles (novi dokument je skriven
+#   dok se ovde ne doda pravilo).
+# - Izmena vazi od sledeceg pitanja, bez restarta Rase. Neispravan fajl iskljucuje
+#   pretragu baze znanja dok se ne ispravi.
+#
+# Uloge su iste kao u .NET aplikaciji (Identity role), velika/mala slova su bitna.
+
+match_field: title
+
+admin_roles: [Administrator]
+
+rules:
+  - match: "0006 Упутство за управљање подацима о ученицима.pdf"
+    roles: [Customer]
+
+  # 0005 Упутство за управљање подацима о школама.pdf - nema pravila, vidi ga samo Administrator
