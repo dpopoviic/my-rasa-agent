@@ -1,4 +1,6 @@
 {
+  "@odata.context": "https://az-search-service-mss-stud-proj.search.windows.net/$metadata#indexers/$entity",
+  "@odata.etag": "\"0x8DF2935C76B8DD6\"",
   "name": "rag-1790004221586-mss-stud-proj-indexer",
   "description": null,
   "dataSourceName": "rag-1790004221586-mss-stud-proj-datasource",
@@ -10,7 +12,6 @@
     "batchSize": null,
     "maxFailedItems": null,
     "maxFailedItemsPerBatch": null,
-    "base64EncodeKeys": null,
     "configuration": {
       "parsingMode": "default"
     }
@@ -20,8 +21,17 @@
       "sourceFieldName": "metadata_storage_name",
       "targetFieldName": "title",
       "mappingFunction": null
+    },
+    {
+      "sourceFieldName": "access_group",
+      "targetFieldName": "access_groups",
+      "mappingFunction": {
+        "name": "jsonArrayToStringCollection",
+        "parameters": null
+      }
     }
   ],
   "outputFieldMappings": [],
+  "cache": null,
   "encryptionKey": null
 }

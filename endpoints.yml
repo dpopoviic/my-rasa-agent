@@ -32,14 +32,15 @@ vector_store:
   vector_field: text_vector             # opciono: ukljucuje hibridnu pretragu (koristi azure_embeddings)
   top_k: 4
   #vector_field i semantic_configuration obezbedjuju da se pretraga podataka vrsi semanticki a ne samo po kljucnoj reci.
-
-  # Pristup po ulogama: svaki deo dokumenta u indeksu ima grupu u polju filter_field
-  # (metadata `access_group` na PDF-u u Blob Storage-u -> indexer je kopira na svaki deo).
+  
+  # Pristup po ulogama: svaki deo dokumenta u indeksu ima LISTU grupa u polju filter_field
+  # (metadata `access_group` na PDF-u, npr. ["customer","teacher"] -> indexer je pretvara
+  # u listu i kopira na svaki deo). Deo prolazi ako mu je bar jedna grupa dozvoljena.
   # role_groups: koje grupe koja uloga (iz .NET Identity, velika/mala slova su bitna) sme da cita.
   # Korisnik sa vise uloga dobija uniju grupa. "*" = sve, ukljucujuci dokumente bez grupe.
   # Uloga koje nema ovde ne vidi nista. Grupe: mala slova, cifre, - i _.
   # Izmena trazi restart Rase (ne treba rasa train).
-  filter_field: access_group
+  filter_field: access_groups
   role_groups:
     Administrator: ["*"]
     Customer: [public, customer]

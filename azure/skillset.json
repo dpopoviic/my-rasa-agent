@@ -1,4 +1,5 @@
 {
+  "@odata.etag": "\"0x8DF2935B0767ACE\"",
   "name": "rag-1790004221586-mss-stud-proj-skillset",
   "description": "Skillset to chunk documents and generate embeddings",
   "skills": [
@@ -12,11 +13,11 @@
       "maximumPageLength": 2000,
       "pageOverlapLength": 500,
       "maximumPagesToTake": 0,
+      "unit": "characters",
       "inputs": [
         {
           "name": "text",
           "source": "/document/content",
-          "sourceContext": null,
           "inputs": []
         }
       ],
@@ -30,7 +31,6 @@
     {
       "@odata.type": "#Microsoft.Skills.Text.AzureOpenAIEmbeddingSkill",
       "name": "#2",
-      "description": null,
       "context": "/document/pages/*",
       "resourceUri": "https://dp-20220322-foundry.openai.azure.com",
       "apiKey": "<redacted>",
@@ -41,7 +41,6 @@
         {
           "name": "text",
           "source": "/document/pages/*",
-          "sourceContext": null,
           "inputs": []
         }
       ],
@@ -50,12 +49,9 @@
           "name": "embedding",
           "targetName": "text_vector"
         }
-      ],
-      "authIdentity": null
+      ]
     }
   ],
-  "cognitiveServices": null,
-  "knowledgeStore": null,
   "indexProjections": {
     "selectors": [
       {
@@ -66,25 +62,21 @@
           {
             "name": "text_vector",
             "source": "/document/pages/*/text_vector",
-            "sourceContext": null,
             "inputs": []
           },
           {
             "name": "chunk",
             "source": "/document/pages/*",
-            "sourceContext": null,
             "inputs": []
           },
           {
             "name": "title",
             "source": "/document/title",
-            "sourceContext": null,
             "inputs": []
           },
           {
-            "name": "access_group",
-            "source": "/document/access_group",
-            "sourceContext": null,
+            "name": "access_groups",
+            "source": "/document/access_groups",
             "inputs": []
           }
         ]
@@ -93,6 +85,5 @@
     "parameters": {
       "projectionMode": "skipIndexingParentDocuments"
     }
-  },
-  "encryptionKey": null
+  }
 }

@@ -70,7 +70,7 @@ def make_config(**overrides) -> EndpointConfig:
         "content_field": "chunk",
         "metadata_fields": ["title"],
         "top_k": 4,
-        "filter_field": "access_group",
+        "filter_field": "access_groups",
         "role_groups": ROLE_GROUPS,
     }
     kwargs.update(overrides)
@@ -103,12 +103,12 @@ class AzureSearchRoleFilterTests(unittest.TestCase):
     def test_customer_gets_filter_with_its_groups(self):
         self.search(["Customer"])
 
-        self.assertEqual(self.sent_filter(), "search.in(access_group, 'customer,public', ',')")
+        self.assertEqual(self.sent_filter(), "access_groups/any(g: search.in(g, 'customer,public', ','))")
 
     def test_user_with_two_roles_gets_union_of_groups(self):
         self.search(["Customer", "Teacher"])
 
-        self.assertEqual(self.sent_filter(), "search.in(access_group, 'customer,public,teacher', ',')")
+        self.assertEqual(self.sent_filter(), "access_groups/any(g: search.in(g, 'customer,public,teacher', ','))")
 
     def test_administrator_searches_without_filter(self):
         self.search(["Administrator"])
@@ -123,7 +123,7 @@ class AzureSearchRoleFilterTests(unittest.TestCase):
     def test_unknown_role_adds_nothing_but_keeps_known_roles(self):
         self.search(["Customer", "Guest"])
 
-        self.assertEqual(self.sent_filter(), "search.in(access_group, 'customer,public', ',')")
+        self.assertEqual(self.sent_filter(), "access_groups/any(g: search.in(g, 'customer,public', ','))")
 
     def test_no_allowed_groups_means_no_azure_call_and_no_documents(self):
         store = self.connected_store()
@@ -141,7 +141,7 @@ class AzureSearchRoleFilterTests(unittest.TestCase):
             self.search(["Customer"], store)
 
         body = FakeAsyncClient.requests[0]
-        self.assertEqual(body["filter"], "search.in(access_group, 'customer,public', ',')")
+        self.assertEqual(body["filter"], "access_groups/any(g: search.in(g, 'customer,public', ','))")
         self.assertEqual(body["vectorFilterMode"], "preFilter")
         self.assertEqual(body["vectorQueries"][0]["fields"], "text_vector")
 

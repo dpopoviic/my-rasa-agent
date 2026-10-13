@@ -1,8 +1,9 @@
 """Baza znanja u Azure AI Search indeksu, sa filtriranjem po ulogama korisnika.
 
-Svaki deo dokumenta (chunk) u indeksu ima polje `filter_field` (access_group) sa
-grupom kojoj dokument pripada - upisuje ga indexer iz metadata PDF-a u Blob
-Storage-u (vidi azure/skillset.json). Uloge korisnika dolaze iz metadata poslednje
+Svaki deo dokumenta (chunk) u indeksu ima polje `filter_field` (access_groups) sa
+listom grupa kojima dokument pripada - indexer je pravi iz JSON liste u metadata
+`access_group` PDF-a u Blob Storage-u (azure/indexer.json, azure/skillset.json).
+Uloge korisnika dolaze iz metadata poslednje
 poruke (user_roles - upisuje ih secure_rest_channel.py iz potpisanog tokena).
 role_groups (endpoints.yml) kaze koje grupe koja uloga sme da cita, a Azure vraca
 samo delove iz tih grupa - filter se primenjuje pre rangiranja, pa korisnik dobija
@@ -143,8 +144,9 @@ class AzureAISearch_Store(InformationRetrieval):
         return False, groups
 
     def _role_filter(self, groups: FrozenSet[Text]) -> Text:
-        # search.in je "ili": deo prolazi ako mu je grupa bilo koja od navedenih
-        return f"search.in({self.filter_field}, '{','.join(sorted(groups))}', ',')"
+        # filter_field je lista grupa dela dokumenta; any(...) prolazi ako je BAR JEDNA
+        # njegova grupa medju dozvoljenima (search.in je "ili")
+        return f"{self.filter_field}/any(g: search.in(g, '{','.join(sorted(groups))}', ','))"
 
     async def search(
         self, query: Text, tracker_state: Dict[str, Any], threshold: float = 0.0
