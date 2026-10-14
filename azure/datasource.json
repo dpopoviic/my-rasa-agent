@@ -1,0 +1,13 @@
+{
+  "name": "rag-1790004221586-mss-stud-proj-datasource",
+  "description": null,
+  "type": "azureblob",
+  "subtype": null,
+  "container": {
+    "name": "documents",
+    "query": null
+  },
+  "dataChangeDetectionPolicy": null,
+  "dataDeletionDetectionPolicy": null,
+  "encryptionKey": null
+}
