@@ -11,6 +11,10 @@ Provere:
 2. `sub` iz tokena mora biti isti kao `sender` poruke (ili sender_id u putanji),
    pa se ne moze poslati poruka u tudji razgovor.
 
+Pored ugradjenih ruta REST kanala, kanal ima i POST /restart ("nova konverzacija").
+Zamenjuje Rasin HTTP API (/conversations/<id>/tracker/events?token=...), pa Rasa
+radi bez --enable-api i bez AUTH_TOKEN-a; restart prolazi iste provere kao poruka.
+
 Metadata poruke pravi kanal sam, iz proverenog tokena ({user_id, user_token,
 user_roles}). Od onoga sto je klijent poslao u "metadata" prihvata se samo
 "language", i to samo jezik iz config.yml - Rasa ga na pocetku sesije upisuje u
@@ -20,7 +24,7 @@ znanja da korisniku vrati samo dokumente koje njegove uloge smeju da citaju.
 """
 
 import os
-from typing import Any, Dict, List, Optional, Text
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Text
 
 import jwt
 import structlog
@@ -29,7 +33,11 @@ from sanic.request import Request
 
 from rasa.core.channels.channel import OnNewMessageType
 from rasa.core.channels.rest import RestInput
+from rasa.shared.core.events import Restarted
 from rasa.shared.utils.yaml import read_yaml_file
+
+if TYPE_CHECKING:
+    from rasa.core.agent import Agent
 
 logger = structlog.get_logger()
 
@@ -138,11 +146,32 @@ class SecureRestInput(RestInput):
         request.ctx.user_roles = _roles_from_claims(claims)
         return None
 
+    @staticmethod
+    async def _restart_conversation(agent: "Agent", sender_id: Text) -> None:
+        """Dodaje `Restarted` u razgovor: sve pre njega se vise ne primenjuje
+        (slotovi, flow, istorija koju LLM vidi), a sledeca poruka pocinje novu sesiju.
+
+        Isti redosled kao Rasin append_events (server.py): prekid obrade u toku,
+        pa izmena trackera pod lock-om, da se ne preplete sa porukom koja se obradjuje.
+        """
+        agent.cancel_background_tasks(sender_id)
+        async with agent.lock_store.lock(sender_id):
+            tracker = await agent.processor.get_tracker(sender_id)
+            tracker.update(Restarted())
+            await agent.processor.save_tracker(tracker)
+
     def blueprint(self, on_new_message: OnNewMessageType) -> Blueprint:
         custom_webhook = super().blueprint(on_new_message)
 
         @custom_webhook.middleware("request")
         async def authenticate(request: Request) -> Optional[response.HTTPResponse]:
             return self._authenticate(request)
+
+        # POST /webhooks/secure_rest/restart  {"sender": "<userId>"}
+        # Middleware je vec proverio token i da je sender iz tela isti kao sub.
+        @custom_webhook.route("/restart", methods=["POST"])
+        async def restart(request: Request) -> response.HTTPResponse:
+            await self._restart_conversation(request.app.ctx.agent, request.ctx.user_id)
+            return response.json({"restarted": True})
 
         return custom_webhook
