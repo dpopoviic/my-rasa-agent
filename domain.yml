@@ -85,6 +85,10 @@ slots:
     type: float
     mappings:
       - type: from_llm
+  cancel_confirmed:
+    type: bool
+    mappings:
+      - type: from_llm
   notes:
     type: text
     mappings:
@@ -151,6 +155,12 @@ responses:
 
   utter_ask_reservation_id:
     - text: "Коју резервацију желите да откажете? Реците ID резервације или назив догађаја."
+
+  utter_ask_cancel_confirmed:
+    - text: "Да ли сте сигурни да желите да откажете резервацију са ID {reservation_id}? Отказивање не може да се поништи."
+
+  utter_cancel_aborted:
+    - text: "У реду, резервација није отказана."
 
   utter_search_events_result:
     - text: "{events_search_result}"

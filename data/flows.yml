@@ -194,14 +194,34 @@ flows:
       Koristi ovaj flow kada korisnik želi da otkaže jednu od SVOJIH
       postojećih rezervacija.
     steps:
-      - collect: reservation_id
+      - id: ask_reservation_id
+        collect: reservation_id
         ask_before_filling: true
         description: |
           ID rezervacije koju treba otkazati. Ako korisnik pomene događaj po
           imenu umesto ID-a rezervacije, potraži odgovarajući ID rezervacije
           u prethodnim porukama (npr. u rezultatima list_my_reservations
           flow-a, koji navode "ID rezervacije <broj>" za svaki unos).
-      - action: action_cancel_reservation
+      # Otkazivanje se ne moze ponistiti, pa trazi izricito "da": LLM je ID mogao
+      # pogresno da protumaci iz poruke ili istorije razgovora.
+      - id: confirm_cancel
+        collect: cancel_confirmed
+        ask_before_filling: true
+        description: |
+          true samo ako korisnik izričito potvrdi da želi da otkaže tu
+          rezervaciju; false za odbijanje, oklevanje ili bilo šta drugo.
+        next:
+          - if: slots.cancel_confirmed
+            then: do_cancel
+          - else: cancel_aborted
+      - id: do_cancel
+        action: action_cancel_reservation
       - action: utter_reservation_action_result
-      - set_slots:
+        next: cleanup
+      - id: cancel_aborted
+        action: utter_cancel_aborted
+        next: cleanup
+      - id: cleanup
+        set_slots:
           - reservation_id: null
+          - cancel_confirmed: null
