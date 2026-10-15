@@ -6,8 +6,11 @@ ih poziva LLM agent preko MCP protokola umesto flow-a.
 
 Identitet korisnika:
 - Rasa agent salje token korisnika u skrivenom `_meta.user_token` polju svakog
-  poziva alata (LLM ga ne vidi). Alat ga prosledjuje kao Authorization: Bearer,
-  uz X-Internal-Api-Key, a .NET (InternalApiKeyHandler) ga ponovo proverava i
+  poziva alata (LLM ga ne vidi). MCP ga prvo sam proveri (potpis, iss, aud, rok -
+  ista pravila kao secure_rest kanal, user_token.py): los ili istekao token se
+  odbija odmah, bez poziva .NET-u, pa se servisni kljuc (X-Internal-Api-Key)
+  dodaje samo na proverene tokene. Ispravan token alat prosledjuje kao
+  Authorization: Bearer, a .NET (InternalApiKeyHandler) ga ponovo proverava i
   korisnika uzima samo iz tokena.
 - Sam MCP server prima samo zahteve sa ispravnim X-Mcp-Api-Key zaglavljem
   (Rasa ga salje iz endpoints.yml) i slusa samo na localhost-u.
@@ -24,9 +27,12 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 import httpx
+import jwt
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+
+from user_token import decode_user_token, load_public_key
 
 load_dotenv()
 
@@ -106,13 +112,30 @@ class InternalApi:
 
 api = InternalApi()
 
+# Javni kljuc za proveru tokena korisnika; ucitava ga create_app() pri startu
+# (bez kljuca MCP se ne podize), a testovi ga postavljaju sami.
+_user_token_public_key: Optional[str] = None
+
+
+def _public_key() -> str:
+    global _user_token_public_key
+    if _user_token_public_key is None:
+        _user_token_public_key = load_public_key()
+    return _user_token_public_key
+
 
 def _user_token(ctx: Context) -> str:
-    """Token korisnika iz skrivenog _meta polja poziva (postavlja ga Rasa agent)."""
+    """Provereni token korisnika iz skrivenog _meta polja poziva (postavlja ga Rasa agent)."""
     meta = ctx.request_context.meta
     token = getattr(meta, "user_token", None) if meta is not None else None
     if not token:
         raise ToolError("The user is not signed in.")
+    try:
+        decode_user_token(token, _public_key())
+    except jwt.PyJWTError as exc:
+        # Samo vrsta greske - token se nikad ne loguje
+        logger.warning("Rejected user token: %s", type(exc).__name__)
+        raise ToolError("The user session is not valid (it may have expired).") from exc
     return token
 
 
@@ -329,6 +352,7 @@ def require_api_key(app: Any, api_key: str) -> Any:
 def create_app() -> Any:
     if not MCP_API_KEY:
         raise RuntimeError("MCP_API_KEY is not set (.env).")
+    _public_key()  # bez javnog kljuca (USER_TOKEN_PUBLIC_KEY_PATH) server ne startuje
     return require_api_key(mcp.streamable_http_app(), MCP_API_KEY)
 
 

@@ -23,7 +23,6 @@ API-ju, koji ga ponovo proverava. user_roles (claim `roles`) koristi pretraga ba
 znanja da korisniku vrati samo dokumente koje njegove uloge smeju da citaju.
 """
 
-import os
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Text
 
 import jwt
@@ -36,26 +35,22 @@ from rasa.core.channels.rest import RestInput
 from rasa.shared.core.events import Restarted
 from rasa.shared.utils.yaml import read_yaml_file
 
+# Pravila provere tokena (kljuc, iss, aud, algoritam, rok) su u zajednickom modulu,
+# koji koristi i MCP server. Konstante se ovde ponovo izvoze zbog testova.
+from user_token import (  # noqa: F401
+    USER_TOKEN_AUDIENCE,
+    USER_TOKEN_ISSUER,
+    USER_TOKEN_ROLES_CLAIM,
+    decode_user_token,
+    load_public_key,
+)
+
 if TYPE_CHECKING:
     from rasa.core.agent import Agent
 
 logger = structlog.get_logger()
 
-# Moraju biti iste kao Issuer / Audience u .NET UserTokenService
-USER_TOKEN_ISSUER = "event-reservation-app"
-USER_TOKEN_AUDIENCE = "event-reservation-chatbot"
-USER_TOKEN_ALGORITHMS = ["ES256"]
-CLOCK_SKEW_SECONDS = 30
-# Mora biti isto kao UserTokenService.RolesClaim u .NET aplikaciji
-USER_TOKEN_ROLES_CLAIM = "roles"
-
 BEARER_PREFIX = "Bearer "
-
-
-def _load_public_key() -> Text:
-    path = os.environ.get("USER_TOKEN_PUBLIC_KEY_PATH", "keys/user_token_public.pem")
-    with open(path, encoding="utf-8") as f:
-        return f.read()
 
 
 def _roles_from_claims(claims: Dict[Text, Any]) -> List[Text]:
@@ -79,26 +74,17 @@ class SecureRestInput(RestInput):
     def __init__(self) -> None:
         super().__init__()
         # Ucitava se pri startu - bez javnog kljuca Rasa ne treba ni da se podigne
-        self.public_key = _load_public_key()
+        self.public_key = load_public_key()
         config = read_yaml_file("config.yml")
         self.languages = {config["language"], *(config.get("additional_languages") or [])}
 
     def _verify_token(self, token: Text) -> Optional[Dict[Text, Any]]:
         """Vraca claim-ove ispravnog tokena (sa `sub`), inace None."""
         try:
-            claims = jwt.decode(
-                token,
-                self.public_key,
-                algorithms=USER_TOKEN_ALGORITHMS,
-                audience=USER_TOKEN_AUDIENCE,
-                issuer=USER_TOKEN_ISSUER,
-                leeway=CLOCK_SKEW_SECONDS,
-                options={"require": ["exp", "iss", "aud", "sub"]},
-            )
+            return decode_user_token(token, self.public_key)
         except jwt.PyJWTError as e:
             logger.warning("secure_rest.invalid_token", error=str(e))
             return None
-        return claims if claims.get("sub") else None
 
     def get_metadata(self, request: Request) -> Optional[Dict[Text, Any]]:
         # Provereni podaci iz middleware-a; iz tela zahteva samo poznat jezik
