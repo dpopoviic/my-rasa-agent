@@ -1,9 +1,12 @@
 """Testovi za secure_rest_channel.py - pre svega da uloge (user_roles) u metadata
-poruke dolaze samo iz potpisanog tokena, nikad od klijenta.
+poruke dolaze samo iz potpisanog tokena, nikad od klijenta, i da restart
+razgovora prolazi iste provere kao poruka.
 
 Pokretanje (iz korena Rasa projekta):  python -m unittest discover -s unit_tests -t .
 """
 
+import asyncio
+import contextlib
 import datetime
 import os
 import tempfile
@@ -14,6 +17,8 @@ from unittest import mock
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+
+from rasa.shared.core.events import Restarted
 
 from secure_rest_channel import (
     USER_TOKEN_AUDIENCE,
@@ -55,6 +60,49 @@ def make_request(token, sender=USER_ID, metadata=None):
         json=body,
         ctx=SimpleNamespace(),
     )
+
+
+def make_restart_request(token, sender=USER_ID):
+    # POST /restart nosi samo sender u telu, bez poruke
+    return SimpleNamespace(
+        method="POST",
+        headers={"Authorization": f"Bearer {token}"} if token else {},
+        match_info={},
+        json={"sender": sender},
+        ctx=SimpleNamespace(),
+    )
+
+
+class FakeAgent:
+    """Belezi redosled poziva koje _restart_conversation pravi nad Rasa agentom."""
+
+    def __init__(self):
+        self.calls = []
+        self.tracker = mock.Mock()
+        self.tracker.update.side_effect = lambda event: self.calls.append(("update", event))
+        agent = self
+
+        class LockStore:
+            @contextlib.asynccontextmanager
+            async def lock(self, conversation_id):
+                agent.calls.append(("lock", conversation_id))
+                yield
+                agent.calls.append(("unlock", conversation_id))
+
+        class Processor:
+            async def get_tracker(self, conversation_id):
+                agent.calls.append(("get_tracker", conversation_id))
+                return agent.tracker
+
+            async def save_tracker(self, tracker):
+                agent.calls.append(("save_tracker", tracker))
+
+        self.lock_store = LockStore()
+        self.processor = Processor()
+
+    def cancel_background_tasks(self, sender_id):
+        self.calls.append(("cancel", sender_id))
+        return False
 
 
 class SecureRestChannelRolesTests(unittest.TestCase):
@@ -148,6 +196,68 @@ class SecureRestChannelRolesTests(unittest.TestCase):
 
         self.assertEqual(rejection.status, 403)
         self.assertFalse(hasattr(request.ctx, "user_roles"))
+
+
+class SecureRestChannelRestartTests(unittest.TestCase):
+    """Restart (nova konverzacija) zamenjuje Rasin HTTP API sa AUTH_TOKEN-om, pa
+    mora da prodje iste provere kao poruka: ispravan token i sender == sub."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.private_key = new_private_key()
+        public_pem = cls.private_key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        handle, cls.public_key_path = tempfile.mkstemp(suffix=".pem")
+        with os.fdopen(handle, "wb") as f:
+            f.write(public_pem)
+
+    @classmethod
+    def tearDownClass(cls):
+        os.remove(cls.public_key_path)
+
+    def setUp(self):
+        with mock.patch.dict(os.environ, {"USER_TOKEN_PUBLIC_KEY_PATH": self.public_key_path}):
+            self.channel = SecureRestInput()
+
+    def test_restart_for_own_conversation_is_authenticated(self):
+        request = make_restart_request(sign_token(self.private_key))
+
+        self.assertIsNone(self.channel._authenticate(request))
+        self.assertEqual(request.ctx.user_id, USER_ID)
+
+    def test_restart_without_token_is_rejected(self):
+        rejection = self.channel._authenticate(make_restart_request(token=None))
+
+        self.assertEqual(rejection.status, 401)
+
+    def test_restart_with_token_signed_by_another_key_is_rejected(self):
+        rejection = self.channel._authenticate(make_restart_request(sign_token(new_private_key())))
+
+        self.assertEqual(rejection.status, 401)
+
+    def test_restart_of_another_users_conversation_is_rejected(self):
+        request = make_restart_request(sign_token(self.private_key), sender="victim")
+
+        rejection = self.channel._authenticate(request)
+
+        self.assertEqual(rejection.status, 403)
+        self.assertFalse(hasattr(request.ctx, "user_id"))
+
+    def test_restart_appends_restarted_and_saves_under_lock(self):
+        agent = FakeAgent()
+
+        asyncio.run(SecureRestInput._restart_conversation(agent, USER_ID))
+
+        names = [name for name, _ in agent.calls]
+        self.assertEqual(
+            names, ["cancel", "lock", "get_tracker", "update", "save_tracker", "unlock"]
+        )
+        for name, arg in agent.calls:
+            if name in ("cancel", "lock", "get_tracker", "unlock"):
+                self.assertEqual(arg, USER_ID)
+        restarted = next(arg for name, arg in agent.calls if name == "update")
+        self.assertIsInstance(restarted, Restarted)
 
 
 if __name__ == "__main__":
