@@ -43,6 +43,12 @@ MCP_HOST = "127.0.0.1"  # samo lokalno - nikad ne izlagati spolja
 MCP_PORT = int(os.environ.get("MCP_SERVER_PORT", "8765"))
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "")
 MCP_API_KEY_HEADER = "x-mcp-api-key"
+# Ogranicenje istovremenih veza/zahteva; preko njega uvicorn odmah vraca 503, umesto
+# da MCP (i .NET iza njega) zagusi gomila poziva - npr. mnogo korisnika odjednom ili
+# agent koji u petlji poziva alate. Uvicorn broji i vezu koja upravo stize, pa
+# istovremeno prolazi najvise N-1 veza (N=1 bi odbijao sve). Ukupno za sve korisnike
+# (Rasa drzi jednu MCP sesiju), ne po korisniku - to ogranicava rate limiting u MVC-u.
+MCP_MAX_CONCURRENCY = int(os.environ.get("MCP_MAX_CONCURRENCY", "50"))
 
 # Ogranicenje velicine odgovora: LLM dobija kompaktne podatke, ne ceo katalog.
 MAX_EVENTS = 50
@@ -330,4 +336,6 @@ if __name__ == "__main__":
     import uvicorn
 
     logging.basicConfig(level=logging.INFO)
-    uvicorn.run(create_app(), host=MCP_HOST, port=MCP_PORT)
+    uvicorn.run(
+        create_app(), host=MCP_HOST, port=MCP_PORT, limit_concurrency=MCP_MAX_CONCURRENCY
+    )
