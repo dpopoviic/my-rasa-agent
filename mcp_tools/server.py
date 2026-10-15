@@ -69,32 +69,49 @@ mcp = FastMCP("event-tools", host=MCP_HOST, port=MCP_PORT)
 
 
 class InternalApi:
-    """HTTP klijent za /api/internal. `transport` postoji zbog testova."""
+    """HTTP klijent za /api/internal. `transport` postoji zbog testova.
+
+    Jedan httpx klijent za ceo proces (connection pooling): veze, i TLS sesije,
+    ka .NET-u se ponovo koriste umesto da se otvaraju za svaki poziv alata.
+    Logovi sadrze samo putanju (bez query stringa) i status - nikad telo odgovora,
+    jer u njemu mogu biti podaci korisnika (rezervacije, napomene).
+    """
 
     def __init__(self, transport: Optional[httpx.AsyncBaseTransport] = None) -> None:
         self._transport = transport
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _http(self) -> httpx.AsyncClient:
+        # Pravi se pri prvom pozivu, unutar event loop-a servera, za koji se vezuje
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=INTERNAL_API_BASE_URL,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                verify=VERIFY_SSL,
+                transport=self._transport,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def get(
         self, path: str, user_token: str, params: Optional[Dict[str, Any]] = None
     ) -> Any:
-        async with httpx.AsyncClient(
-            base_url=INTERNAL_API_BASE_URL,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            verify=VERIFY_SSL,
-            transport=self._transport,
-        ) as client:
-            try:
-                response = await client.get(
-                    path,
-                    params=params,
-                    headers={
-                        "X-Internal-Api-Key": INTERNAL_API_KEY,
-                        "Authorization": f"Bearer {user_token}",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                logger.warning("Internal API call failed: GET %s -> %r", path, exc)
-                raise ToolError("The application is not reachable right now.") from exc
+        try:
+            response = await self._http().get(
+                path,
+                params=params,
+                headers={
+                    "X-Internal-Api-Key": INTERNAL_API_KEY,
+                    "Authorization": f"Bearer {user_token}",
+                },
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("Internal API call failed: GET %s -> %s", path, type(exc).__name__)
+            raise ToolError("The application is not reachable right now.") from exc
 
         if response.status_code == 404:
             return None
@@ -102,10 +119,7 @@ class InternalApi:
             logger.warning("Internal API rejected the call: GET %s -> %s", path, response.status_code)
             raise ToolError("The user is not authorized for this data (session may have expired).")
         if response.is_error:
-            logger.warning(
-                "Internal API call failed: GET %s -> HTTP %s, body: %s",
-                path, response.status_code, response.text[:500],
-            )
+            logger.warning("Internal API call failed: GET %s -> HTTP %s", path, response.status_code)
             raise ToolError("The application returned an error.")
         return response.json()
 

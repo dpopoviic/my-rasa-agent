@@ -15,6 +15,14 @@ influenced by what the user types, metadata cannot. The token is forwarded as
 Authorization: Bearer, alongside the shared-secret X-Internal-Api-Key, and
 InternalApiKeyHandler on the .NET side verifies it again and takes the user id
 only from the token, so these actions cannot act for any other user.
+
+Concurrency: the actions run inside the Rasa process (actions_module), on its
+single asyncio event loop, so they are async and await every call to .NET. A
+blocking call would stop Rasa for every user until .NET answers. All calls share
+one HTTP client, so connections (and TLS sessions) to .NET are reused.
+
+Logging: a failed call logs only the method, path (no query string) and status -
+never the response body or the search parameters, which can hold users' data.
 """
 import logging
 import calendar
@@ -22,7 +30,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Text
 
-import requests
+import httpx
 from rasa_sdk import Action, Tracker
 from rasa_sdk.events import SlotSet
 from rasa_sdk.executor import CollectingDispatcher
@@ -40,24 +48,63 @@ VERIFY_SSL = os.environ.get("INTERNAL_API_VERIFY_SSL", "true").lower() != "false
 NOT_SIGNED_IN_MESSAGE = "Морате бити пријављени да бисте ово урадили."
 GENERIC_ERROR_MESSAGE = "Дошло је до проблема приликом комуникације са апликацијом. Молимо покушајте поново касније."
 
+# Poruke koje .NET vraca u ReservationOperationResult.errorMessage (engleski) -> za korisnika
+_DOTNET_ERROR_MESSAGES = {
+    "Reservation not found.": "Резервација са тим ID-јем не постоји међу Вашим резервацијама.",
+    "The selected event could not be found.": "Изабрани догађај није пронађен.",
+    "You already have a reservation for this event.": "Већ имате резервацију за овај догађај.",
+    "This event has reached its capacity and can no longer accept reservations.":
+        "Догађај је попуњен и више не прима резервације.",
+}
 
-def _log_failure(exc: requests.RequestException) -> None:
-    """Logs why a call to the .NET internal API failed (status, url, body)."""
-    response = exc.response
-    request = exc.request
-    method = request.method if request is not None else "?"
-    url = request.url if request is not None else "?"
+# Greske poziva .NET-a: mreza/timeout/HTTP status (httpx.HTTPError) ili telo koje nije JSON
+CALL_ERRORS = (httpx.HTTPError, ValueError)
 
-    if response is not None:
+_client: Optional[httpx.AsyncClient] = None
+
+
+def _http() -> httpx.AsyncClient:
+    """Jedan HTTP klijent za ceo Rasa proces (connection pooling).
+
+    Pravi se pri prvom pozivu, unutar Rasinog event loop-a, za koji se vezuje.
+    Testovi ga zamenjuju klijentom sa laznim transportom.
+    """
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(
+            base_url=INTERNAL_API_BASE_URL,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            verify=VERIFY_SSL,
+        )
+    return _client
+
+
+async def _call_json(method: Text, path: Text, user_token: Text, **kwargs: Any) -> Any:
+    """Poziv .NET internog API-ja; vraca JSON telo ili baca neku od CALL_ERRORS."""
+    response = await _http().request(method, path, headers=_headers(user_token), **kwargs)
+    response.raise_for_status()
+    return response.json()
+
+
+def _log_failure(exc: Exception) -> None:
+    """Zasto poziv .NET-a nije uspeo - bez tela odgovora i bez query stringa."""
+    if isinstance(exc, httpx.HTTPStatusError):
         logger.warning(
-            "Internal API call failed: %s %s -> HTTP %s, body: %s",
-            method, url, response.status_code, (response.text or "")[:500],
+            "Internal API call failed: %s %s -> HTTP %s",
+            exc.request.method, exc.request.url.path, exc.response.status_code,
+        )
+    elif isinstance(exc, httpx.RequestError):
+        logger.warning(
+            "Internal API call failed (no response): %s %s -> %s",
+            exc.request.method, exc.request.url.path, type(exc).__name__,
         )
     else:
-        logger.warning(
-            "Internal API call failed (no response): %s %s -> %s: %s",
-            method, url, type(exc).__name__, exc,
-        )
+        logger.warning("Internal API call failed: %s", type(exc).__name__)
+
+
+def _operation_error(result: Dict[Text, Any], default: Text) -> Text:
+    """Poruka za korisnika kad .NET vrati success: false."""
+    return _DOTNET_ERROR_MESSAGES.get(result.get("errorMessage") or "", default)
 
 
 def _current_user_token(tracker: Tracker) -> Optional[Text]:
@@ -130,7 +177,7 @@ class ActionSearchEvents(Action):
     def name(self) -> Text:
         return "action_search_events"
 
-    def run(
+    async def run(
         self,
         dispatcher: CollectingDispatcher,
         tracker: Tracker,
@@ -164,16 +211,10 @@ class ActionSearchEvents(Action):
                 params["endDate"] = f"{year}-12-31"
 
         try:
-            response = requests.get(
-                f"{INTERNAL_API_BASE_URL}/api/internal/events/search",
-                params=params,
-                headers=_headers(user_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                verify=VERIFY_SSL,
+            events = await _call_json(
+                "GET", "/api/internal/events/search", user_token, params=params
             )
-            response.raise_for_status()
-            events = response.json()
-        except requests.RequestException as exc:
+        except CALL_ERRORS as exc:
             _log_failure(exc)
             return [SlotSet("events_search_result", GENERIC_ERROR_MESSAGE)]
 
@@ -212,7 +253,7 @@ class ActionResolveEvent(Action):
     def name(self) -> Text:
         return "action_resolve_event"
 
-    def run(
+    async def run(
         self,
         dispatcher: CollectingDispatcher,
         tracker: Tracker,
@@ -228,16 +269,10 @@ class ActionResolveEvent(Action):
             return [SlotSet("event_match", "not_found"), SlotSet("event_name", None)]
 
         try:
-            response = requests.get(
-                f"{INTERNAL_API_BASE_URL}/api/internal/events/resolve",
-                params={"name": term},
-                headers=_headers(user_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                verify=VERIFY_SSL,
-            )
-            response.raise_for_status()
-            candidates = response.json() or []
-        except requests.RequestException as exc:
+            candidates = await _call_json(
+                "GET", "/api/internal/events/resolve", user_token, params={"name": term}
+            ) or []
+        except CALL_ERRORS as exc:
             _log_failure(exc)
             dispatcher.utter_message(response="utter_generic_error")
             return [SlotSet("event_match", "error")]
@@ -265,7 +300,7 @@ class ActionGetEventAvailability(Action):
     def name(self) -> Text:
         return "action_get_event_availability"
 
-    def run(
+    async def run(
         self,
         dispatcher: CollectingDispatcher,
         tracker: Tracker,
@@ -283,20 +318,18 @@ class ActionGetEventAvailability(Action):
             )]
 
         try:
-            response = requests.get(
-                f"{INTERNAL_API_BASE_URL}/api/internal/events/{event_id}/availability",
-                headers=_headers(user_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                verify=VERIFY_SSL,
+            availability = await _call_json(
+                "GET", f"/api/internal/events/{event_id}/availability", user_token
             )
-            if response.status_code == 404:
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
                 return [SlotSet(
                     "event_availability_result",
                     "Тражени догађај није пронађен.",
                 )]
-            response.raise_for_status()
-            availability = response.json()
-        except requests.RequestException as exc:
+            _log_failure(exc)
+            return [SlotSet("event_availability_result", GENERIC_ERROR_MESSAGE)]
+        except CALL_ERRORS as exc:
             _log_failure(exc)
             return [SlotSet("event_availability_result", GENERIC_ERROR_MESSAGE)]
 
@@ -322,7 +355,7 @@ class ActionListMyReservations(Action):
     def name(self) -> Text:
         return "action_list_my_reservations"
 
-    def run(
+    async def run(
         self,
         dispatcher: CollectingDispatcher,
         tracker: Tracker,
@@ -333,15 +366,8 @@ class ActionListMyReservations(Action):
             return [SlotSet("my_reservations_result", NOT_SIGNED_IN_MESSAGE)]
 
         try:
-            response = requests.get(
-                f"{INTERNAL_API_BASE_URL}/api/internal/reservations",
-                headers=_headers(user_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                verify=VERIFY_SSL,
-            )
-            response.raise_for_status()
-            reservations = response.json()
-        except requests.RequestException as exc:
+            reservations = await _call_json("GET", "/api/internal/reservations", user_token)
+        except CALL_ERRORS as exc:
             _log_failure(exc)
             return [SlotSet("my_reservations_result", GENERIC_ERROR_MESSAGE)]
 
@@ -365,7 +391,7 @@ class ActionReserveEvent(Action):
     def name(self) -> Text:
         return "action_reserve_event"
 
-    def run(
+    async def run(
         self,
         dispatcher: CollectingDispatcher,
         tracker: Tracker,
@@ -385,23 +411,18 @@ class ActionReserveEvent(Action):
         notes = _clean_text(tracker.get_slot("notes"))
 
         try:
-            response = requests.post(
-                f"{INTERNAL_API_BASE_URL}/api/internal/reservations",
+            result = await _call_json(
+                "POST", "/api/internal/reservations", user_token,
                 json={"eventId": event_id, "notes": notes},
-                headers=_headers(user_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                verify=VERIFY_SSL,
             )
-            response.raise_for_status()
-            result = response.json()
-        except requests.RequestException as exc:
+        except CALL_ERRORS as exc:
             _log_failure(exc)
             return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
 
         if result.get("success"):
             message = f"Резервација за догађај {tracker.get_slot('event_name')} је успешно креирана."
         else:
-            message = result.get("message") or "Резервација није успела."
+            message = _operation_error(result, "Резервација није успела.")
 
         return [SlotSet("reservation_action_result", message)]
 
@@ -410,7 +431,7 @@ class ActionCancelReservation(Action):
     def name(self) -> Text:
         return "action_cancel_reservation"
 
-    def run(
+    async def run(
         self,
         dispatcher: CollectingDispatcher,
         tracker: Tracker,
@@ -428,22 +449,17 @@ class ActionCancelReservation(Action):
             )]
 
         try:
-            response = requests.delete(
-                f"{INTERNAL_API_BASE_URL}/api/internal/reservations/{reservation_id}",
-                headers=_headers(user_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                verify=VERIFY_SSL,
+            result = await _call_json(
+                "DELETE", f"/api/internal/reservations/{reservation_id}", user_token
             )
-            response.raise_for_status()
-            result = response.json()
-        except requests.RequestException as exc:
+        except CALL_ERRORS as exc:
             _log_failure(exc)
             return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
 
         if result.get("success"):
             message = "Резервација је успешно отказана."
         else:
-            message = result.get("message") or "Отказивање резервације није успело."
+            message = _operation_error(result, "Отказивање резервације није успело.")
 
         return [SlotSet("reservation_action_result", message)]
 

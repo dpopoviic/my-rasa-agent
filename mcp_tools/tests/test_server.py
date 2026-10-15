@@ -138,6 +138,7 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
         original = server.api
         server.api = server.InternalApi(transport=httpx.MockTransport(fake.handler))
         self.addCleanup(setattr, server, "api", original)
+        self.addAsyncCleanup(server.api.aclose)
 
     async def call(
         self, tool: str, args: Optional[Dict[str, Any]] = None, meta: Optional[Dict[str, Any]] = None
@@ -230,6 +231,30 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.isError)
         self.assertIn("999", result.content[0].text)
+
+    async def test_calls_reuse_one_http_client(self) -> None:
+        # Connection pooling: isti klijent (i njegove veze) za sve pozive alata
+        self.use_fake(FakeDotNet(body=[]))
+
+        await self.call("get_my_reservations", {}, {"user_token": self.token})
+        first_client = server.api._client
+        await self.call("search_events", {}, {"user_token": self.token})
+
+        self.assertIsNotNone(first_client)
+        self.assertIs(server.api._client, first_client)
+
+    async def test_error_log_has_no_response_body(self) -> None:
+        # Telo odgovora moze da sadrzi podatke korisnika - ne sme u log
+        self.use_fake(FakeDotNet(status=500, body={"notes": "PRIVATE-NOTE"}))
+
+        with self.assertLogs("mcp_tools", level="WARNING") as logs:
+            result = await self.call("get_my_reservations", {}, {"user_token": self.token})
+
+        self.assertTrue(result.isError)
+        output = "\n".join(logs.output)
+        self.assertIn("/api/internal/reservations", output)
+        self.assertIn("500", output)
+        self.assertNotIn("PRIVATE-NOTE", output)
 
     async def test_token_rejected_by_dotnet_is_an_error(self) -> None:
         # Token je ispravan za MCP, ali ga .NET odbija (npr. nalog zakljucan)
