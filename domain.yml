@@ -145,7 +145,7 @@ responses:
     - text: "Да прикажем само догађаје који још увек имају слободних места?"
 
   utter_ask_event_name:
-    - text: "За који догађај? Унесите назив догађаја."
+    - text: "За који догађај? Унесите назив догађаја тачно онако како је написан у списку догађаја."
 
   utter_ask_event_confirmed:
     - text: "Да ли сте сигурни да желите резервацију за догађај {event_name}?"
@@ -174,15 +174,22 @@ responses:
   utter_reservation_action_result:
     - text: "{reservation_action_result}"
 
-  # Override za ugrađeni pattern_cannot_handle flow (grana "not_supported") -
-  # ovo je tacan tekst koji je stari Foundry agent vracao za zahteve van
-  # obima ove aplikacije.
+  # Override za ugrađeni pattern_cannot_handle flow (grana "not_supported").
   utter_cannot_handle:
-    - text: "Није могуће извршити тражени захтев"
+    - text: "Нажалост, тај захтев не могу да извршим. Могу да Вам помогнем око претраге догађаја, Ваших резервација или питања из моје базе знања."
 
-  # Koristi ga EnterpriseSearchPolicy kad u ./docs nema relevantnog odgovora (check_relevancy: true).
+  # Koristi ga EnterpriseSearchPolicy ([NO_RAG_ANSWER]): pitanje van domena ILI podatak koji ne postoji /
+  # korisnik ne sme da vidi - namerno isti tekst za sve, da se ne otkrije da podatak postoji.
   utter_no_relevant_answer_found:
-    - text: "Нажалост, немам информацију о томе. Могу да помогнем око претраге догађаја, доступности и резервација."
+    - text: "Ја сам Влаки, асистент за догађаје, резервације и питања из моје базе знања, па о томе немам информацију. Радо ћу Вам помоћи око догађаја, Ваших резервација или неког питања из те области."
+
+  # Override ugradjenih odgovora koji bi korisniku pokazali interne nazive slotova
+  # (pattern_correction: "updating search_term to ...") ili ga ne razumeju.
+  utter_corrected_previous_input:
+    - text: "У реду, исправио сам податке које сте навели."
+
+  utter_ask_rephrase:
+    - text: "Извините, нисам Вас добро разумео. Можете ли да преформулишете?"
 
   # Override ugradjenog odgovora iz pattern_completed (original je engleski + rephrase,
   # pa je LLM birao pismo sam).
@@ -206,19 +213,38 @@ responses:
     - text: "placeholder"
       metadata:
         rephrase: True
+        # Zajednicko jezgro (vidi prompts/event_assistant_prompt.jinja2), skraceno za caskanje.
         rephrase_prompt: |
-          Sledi razgovor sa AI asistentom napravljenim u Rasa frejmvorku.
-          Asistent pomaže korisnicima da pronađu događaje, provere dostupnost
-          i upravljaju svojim rezervacijama za Event Reservation aplikaciju.
-          Asistent je ljubazan, kratak i prijateljski nastrojen.
-          Korisnik ćaska van teme - asistent treba da odgovori kratko i
-          ljubazno, bez izmišljanja podataka o događajima ili rezervacijama.
-          Asistent UVEK odgovara na jeziku: {{language}}, čak i kada korisnik
-          piše drugim pismom ili na drugom jeziku. Ne mešati pisma.
-          Kontekst / prethodni razgovor sa korisnikom:
+          {%- set language_labels = {"sr-Cyrl": "Serbian, written in Cyrillic script (ћирилица)", "sr-Latn": "Serbian, written in Latin script (latinica)", "en": "English"} -%}
+          {%- set language_code = slots.get("language") if slots else none -%}
+          {%- set answer_language = language_labels.get(language_code) or language -%}
+          ### Who you are
+          You are **Vlaki**, the virtual assistant of the event reservation application. You help signed-in users to:
+          - browse available events and check how many places are free,
+          - make, review and cancel their own reservations,
+          - get answers to questions covered by your knowledge base.
+          That is your whole scope.
+
+          ### Your task
+          The user is making small talk. Reply briefly and kindly: greet back, say who you are or what you can
+          do (the three things above), or acknowledge the user's name. If the message asks about anything outside
+          your scope (programming, general knowledge, other topics), decline politely: you are Vlaki, an assistant
+          for events, reservations and questions from your knowledge base, you have no information about that,
+          and you would be glad to help with events, reservations or a question from that area.
+
+          ### Core rules
+          1. Write the ENTIRE reply in {{ answer_language }}, whatever language or script the user writes in. Do not mix scripts.
+          2. No invention: never mention any event, reservation or fact. Never answer from general knowledge.
+          3. Never show technical names (slots, flows, tools, code) and never mention roles or permissions.
+          4. Formal, polite and kind{% if language_code != "en" %}; in Serbian always "Vi" / "Vas" / "Vam", never "ti"{% endif %}. One to three sentences, no emojis.
+
+          Context / previous conversation with the user:
           {{history}}
+
+          Last user message:
           {{current_input}}
-          Predloženi odgovor asistenta:
+
+          Reply in {{ answer_language }}:
 
   # Poruke koje salje action_resolve_event. Moraju biti odgovori (ne tekst u kodu),
   # jer samo odgovori prolaze kroz rephraser, pa se samo oni prevode.

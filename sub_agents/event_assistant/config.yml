@@ -6,7 +6,7 @@ agent:
   name: event_assistant
   protocol: RASA
   description: |
-    Answer the user's request about events and their own reservations that
+    Vlaki's reasoning helper. Answer the user's request about events and their own reservations that
     requires combining, comparing or reasoning over several pieces of data -
     for example planning a schedule of events without time overlaps, finding
     which events fit around existing reservations, or comparing events by

@@ -10,6 +10,7 @@ pipeline: #kako se poruka korisnika obradjuje
   # Varijanta command generatora koja pored StartFlow/SetSlot... zna i komandu SearchAndReply
   # (pitanje za bazu znanja). Zamenjuje CompactLLMCommandGenerator, ne koriste se oba.
   - name: SearchReadyLLMCommandGenerator
+    prompt_template: prompts/command_generator_prompt.jinja2 #Rasin sablon + Vlakijev identitet i pravila za slotove
     llm:
       model_group: azure_llm_deployments #id grupe modela koja se definise u endpoints.yml
     flow_retrieval:
