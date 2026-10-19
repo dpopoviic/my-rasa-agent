@@ -255,6 +255,8 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/internal/reservations", output)
         self.assertIn("500", output)
         self.assertNotIn("PRIVATE-NOTE", output)
+        # cid iz proverenog tokena - povezuje log sa logovima .NET-a i Rase
+        self.assertIn("correlation_id=correlation-1", output)
 
     async def test_token_rejected_by_dotnet_is_an_error(self) -> None:
         # Token je ispravan za MCP, ali ga .NET odbija (npr. nalog zakljucan)

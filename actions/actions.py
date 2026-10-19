@@ -93,20 +93,26 @@ async def _call_json(method: Text, path: Text, user_token: Text, **kwargs: Any) 
     response.raise_for_status()
     return response.json()
 
-def _log_failure(exc: Exception) -> None:
-    """Zasto poziv .NET-a nije uspeo - bez tela odgovora i bez query stringa."""
+def _log_failure(exc: Exception, tracker: Tracker) -> None:
+    """Zasto poziv .NET-a nije uspeo - bez tela odgovora i bez query stringa.
+
+    correlation_id povezuje ovaj log sa logovima .NET-a i Rase za istu poruku.
+    """
+    correlation_id = _correlation_id(tracker)
     if isinstance(exc, httpx.HTTPStatusError):
         logger.warning(
-            "Internal API call failed: %s %s -> HTTP %s",
-            exc.request.method, exc.request.url.path, exc.response.status_code,
+            "Internal API call failed: %s %s -> HTTP %s (correlation_id=%s)",
+            exc.request.method, exc.request.url.path, exc.response.status_code, correlation_id,
         )
     elif isinstance(exc, httpx.RequestError):
         logger.warning(
-            "Internal API call failed (no response): %s %s -> %s",
-            exc.request.method, exc.request.url.path, type(exc).__name__,
+            "Internal API call failed (no response): %s %s -> %s (correlation_id=%s)",
+            exc.request.method, exc.request.url.path, type(exc).__name__, correlation_id,
         )
     else:
-        logger.warning("Internal API call failed: %s", type(exc).__name__)
+        logger.warning(
+            "Internal API call failed: %s (correlation_id=%s)", type(exc).__name__, correlation_id
+        )
 
 def _operation_error(result: Dict[Text, Any], default: Text) -> Text:
     """Poruka za korisnika kad .NET vrati success: false - po errorCode, a po tekstu samo ako koda nema."""
@@ -115,12 +121,17 @@ def _operation_error(result: Dict[Text, Any], default: Text) -> Text:
         return _DOTNET_ERROR_CODES.get(code, default)
     return _DOTNET_ERROR_MESSAGES.get(result.get("errorMessage") or "", default)
 
-def _current_user_token(tracker: Tracker) -> Optional[Text]:
+def _message_metadata(tracker: Tracker) -> Dict[Text, Any]:
     # Metadata upisuje secure_rest kanal tek posto proveri token; poslednja poruka
-    # uvek nosi svez token (novi za svaku poruku), pa se ne cuva u slotu.
-    metadata = (tracker.latest_message or {}).get("metadata") or {}
-    user_token = metadata.get("user_token")
-    return user_token or None
+    # uvek nosi svez token (novi za svaku poruku), pa se nista od ovoga ne cuva u slotu.
+    return (tracker.latest_message or {}).get("metadata") or {}
+
+def _current_user_token(tracker: Tracker) -> Optional[Text]:
+    return _message_metadata(tracker).get("user_token") or None
+
+def _correlation_id(tracker: Tracker) -> Text:
+    """correlation_id poruke (claim cid iz tokena); "-" ako ga nema, da se log ipak ispise."""
+    return _message_metadata(tracker).get("correlation_id") or "-"
 
 def _headers(user_token: Text) -> Dict[Text, Text]:
     return {
@@ -221,7 +232,7 @@ class ActionSearchEvents(Action):
                 "GET", "/api/internal/events/search", user_token, params=params
             )
         except CALL_ERRORS as exc:
-            _log_failure(exc)
+            _log_failure(exc, tracker)
             return [SlotSet("events_search_result", GENERIC_ERROR_MESSAGE)]
 
         if not events:
@@ -279,7 +290,7 @@ class ActionResolveEvent(Action):
                 "GET", "/api/internal/events/resolve", user_token, params={"name": term}
             ) or []
         except CALL_ERRORS as exc:
-            _log_failure(exc)
+            _log_failure(exc, tracker)
             dispatcher.utter_message(response="utter_generic_error")
             return [SlotSet("event_match", "error")]
 
@@ -333,10 +344,10 @@ class ActionGetEventAvailability(Action):
                     "event_availability_result",
                     "Тражени догађај није пронађен.",
                 )]
-            _log_failure(exc)
+            _log_failure(exc, tracker)
             return [SlotSet("event_availability_result", GENERIC_ERROR_MESSAGE)]
         except CALL_ERRORS as exc:
-            _log_failure(exc)
+            _log_failure(exc, tracker)
             return [SlotSet("event_availability_result", GENERIC_ERROR_MESSAGE)]
 
         message = (
@@ -373,7 +384,7 @@ class ActionListMyReservations(Action):
         try:
             reservations = await _call_json("GET", "/api/internal/reservations", user_token)
         except CALL_ERRORS as exc:
-            _log_failure(exc)
+            _log_failure(exc, tracker)
             return [SlotSet("my_reservations_result", GENERIC_ERROR_MESSAGE)]
 
         if not reservations:
@@ -420,7 +431,7 @@ class ActionReserveEvent(Action):
                 json={"eventId": event_id, "notes": notes},
             )
         except CALL_ERRORS as exc:
-            _log_failure(exc)
+            _log_failure(exc, tracker)
             return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
 
         if result.get("success"):
@@ -460,7 +471,7 @@ class ActionCancelReservation(Action):
                 "DELETE", f"/api/internal/reservations/{reservation_id}", user_token
             )
         except CALL_ERRORS as exc:
-            _log_failure(exc)
+            _log_failure(exc, tracker)
             return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
 
         if result.get("success"):

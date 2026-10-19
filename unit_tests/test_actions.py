@@ -21,13 +21,20 @@ from rasa_sdk.executor import CollectingDispatcher
 from actions import actions
 
 TOKEN = "user-token-123"
+CORRELATION_ID = "correlation-1"
 
 
 class FakeTracker:
     """Samo ono sto akcije citaju: metadata poslednje poruke i slotovi."""
 
-    def __init__(self, token: Optional[str] = TOKEN, slots: Optional[Dict[str, Any]] = None):
-        self.latest_message = {"metadata": {"user_token": token}} if token else {"metadata": {}}
+    def __init__(self, token: Optional[str] = TOKEN, slots: Optional[Dict[str, Any]] = None,
+                 correlation_id: Optional[str] = CORRELATION_ID):
+        metadata: Dict[str, Any] = {}
+        if token:
+            metadata["user_token"] = token
+        if correlation_id:
+            metadata["correlation_id"] = correlation_id
+        self.latest_message = {"metadata": metadata}
         self._slots = slots or {}
 
     def get_slot(self, key: str) -> Any:
@@ -284,6 +291,24 @@ class FailureTests(ActionTestCase):
 
         self.assertIn("GET /api/internal/reservations -> HTTP 500", output)
         self.assertNotIn("PRIVATE-NOTE", output)
+
+    async def test_failure_log_carries_correlation_id(self):
+        # Po njemu se ovaj log povezuje sa logovima .NET-a i Rase za istu poruku
+        output = "\n".join(await self.assert_generic_error(
+            FakeDotNet(error=httpx.ConnectError("connection refused"))
+        ))
+
+        self.assertIn(f"correlation_id={CORRELATION_ID}", output)
+
+    async def test_failure_without_correlation_id_is_still_logged(self):
+        self.use_fake(FakeDotNet(status=500))
+
+        with self.assertLogs("actions.actions", level="WARNING") as logs:
+            await self.run_action(
+                actions.ActionListMyReservations, FakeTracker(correlation_id=None)
+            )
+
+        self.assertIn("correlation_id=-", "\n".join(logs.output))
 
     async def test_unreachable_dotnet_gives_generic_message(self):
         output = "\n".join(await self.assert_generic_error(

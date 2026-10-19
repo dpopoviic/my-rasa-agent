@@ -24,7 +24,7 @@ import json
 import logging
 import os
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import httpx
 import jwt
@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from user_token import decode_user_token, load_public_key
+from user_token import USER_TOKEN_CORRELATION_ID_CLAIM, decode_user_token, load_public_key
 
 load_dotenv()
 
@@ -98,28 +98,39 @@ class InternalApi:
             self._client = None
 
     async def get(
-        self, path: str, user_token: str, params: Optional[Dict[str, Any]] = None
+        self, path: str, session: "UserSession", params: Optional[Dict[str, Any]] = None
     ) -> Any:
+        # correlation_id povezuje ove logove sa logovima .NET-a i Rase za istu poruku
+        correlation_id = session.correlation_id
         try:
             response = await self._http().get(
                 path,
                 params=params,
                 headers={
                     "X-Internal-Api-Key": INTERNAL_API_KEY,
-                    "Authorization": f"Bearer {user_token}",
+                    "Authorization": f"Bearer {session.token}",
                 },
             )
         except httpx.HTTPError as exc:
-            logger.warning("Internal API call failed: GET %s -> %s", path, type(exc).__name__)
+            logger.warning(
+                "Internal API call failed: GET %s -> %s (correlation_id=%s)",
+                path, type(exc).__name__, correlation_id,
+            )
             raise ToolError("The application is not reachable right now.") from exc
 
         if response.status_code == 404:
             return None
         if response.status_code in (401, 403):
-            logger.warning("Internal API rejected the call: GET %s -> %s", path, response.status_code)
+            logger.warning(
+                "Internal API rejected the call: GET %s -> %s (correlation_id=%s)",
+                path, response.status_code, correlation_id,
+            )
             raise ToolError("The user is not authorized for this data (session may have expired).")
         if response.is_error:
-            logger.warning("Internal API call failed: GET %s -> HTTP %s", path, response.status_code)
+            logger.warning(
+                "Internal API call failed: GET %s -> HTTP %s (correlation_id=%s)",
+                path, response.status_code, correlation_id,
+            )
             raise ToolError("The application returned an error.")
         return response.json()
 
@@ -138,19 +149,27 @@ def _public_key() -> str:
     return _user_token_public_key
 
 
-def _user_token(ctx: Context) -> str:
+class UserSession(NamedTuple):
+    """Provereni token korisnika i correlation id iz njega (claim `cid`)."""
+
+    token: str
+    correlation_id: str
+
+
+def _user_session(ctx: Context) -> UserSession:
     """Provereni token korisnika iz skrivenog _meta polja poziva (postavlja ga Rasa agent)."""
     meta = ctx.request_context.meta
     token = getattr(meta, "user_token", None) if meta is not None else None
     if not token:
         raise ToolError("The user is not signed in.")
     try:
-        decode_user_token(token, _public_key())
+        claims = decode_user_token(token, _public_key())
     except jwt.PyJWTError as exc:
-        # Samo vrsta greske - token se nikad ne loguje
+        # Samo vrsta greske - token se nikad ne loguje. Ni correlation_id: iz
+        # neproverenog tokena mu se ne moze verovati.
         logger.warning("Rejected user token: %s", type(exc).__name__)
         raise ToolError("The user session is not valid (it may have expired).") from exc
-    return token
+    return UserSession(token, claims[USER_TOKEN_CORRELATION_ID_CLAIM])
 
 
 def _to_json(value: Any) -> str:
@@ -283,7 +302,7 @@ async def search_events(
         search_term, location, start_date, end_date, year, month, only_available
     )
     events: List[Dict[str, Any]] = await api.get(
-        "/api/internal/events/search", _user_token(ctx), params
+        "/api/internal/events/search", _user_session(ctx), params
     ) or []
     return _to_json({
         "count": len(events),
@@ -298,7 +317,7 @@ async def get_event_availability(ctx: Context, event_id: int) -> str:
     can still be reserved. Use the event_id returned by search_events.
     """
     availability = await api.get(
-        f"/api/internal/events/{event_id}/availability", _user_token(ctx)
+        f"/api/internal/events/{event_id}/availability", _user_session(ctx)
     )
     if availability is None:
         raise ToolError(f"No event with event_id {event_id}.")
@@ -318,7 +337,7 @@ async def get_my_reservations(ctx: Context) -> str:
     location. Returns JSON {count, reservations[]}.
     """
     reservations: List[Dict[str, Any]] = await api.get(
-        "/api/internal/reservations", _user_token(ctx)
+        "/api/internal/reservations", _user_session(ctx)
     ) or []
     return _to_json({
         "count": len(reservations),
