@@ -48,7 +48,17 @@ VERIFY_SSL = os.environ.get("INTERNAL_API_VERIFY_SSL", "true").lower() != "false
 NOT_SIGNED_IN_MESSAGE = "Морате бити пријављени да бисте ово урадили."
 GENERIC_ERROR_MESSAGE = "Дошло је до проблема приликом комуникације са апликацијом. Молимо покушајте поново касније."
 
-# Poruke koje .NET vraca u ReservationOperationResult.errorMessage (engleski) -> za korisnika
+# Kodovi koje .NET vraca u ReservationOperationResult.errorCode -> poruka za korisnika.
+# Akcija rezervacije AlreadyReserved obradjuje sama (rezervacija postoji, pa to nije greska).
+_DOTNET_ERROR_CODES = {
+    "EventNotFound": "Изабрани догађај није пронађен.",
+    "AlreadyReserved": "Већ имате резервацију за овај догађај.",
+    "EventFull": "Догађај је попуњен и више не прима резервације.",
+    "ReservationNotFound": "Резервација са тим ID-јем не постоји међу Вашим резервацијама.",
+}
+
+# Rezerva za .NET bez errorCode (starija verzija): poruka (engleski) -> za korisnika.
+# Moze da se obrise kad je .NET sa errorCode pusten svuda.
 _DOTNET_ERROR_MESSAGES = {
     "Reservation not found.": "Резервација са тим ID-јем не постоји међу Вашим резервацијама.",
     "The selected event could not be found.": "Изабрани догађај није пронађен.",
@@ -103,7 +113,10 @@ def _log_failure(exc: Exception) -> None:
 
 
 def _operation_error(result: Dict[Text, Any], default: Text) -> Text:
-    """Poruka za korisnika kad .NET vrati success: false."""
+    """Poruka za korisnika kad .NET vrati success: false - po errorCode, a po tekstu samo ako koda nema."""
+    code = result.get("errorCode")
+    if code:
+        return _DOTNET_ERROR_CODES.get(code, default)
     return _DOTNET_ERROR_MESSAGES.get(result.get("errorMessage") or "", default)
 
 
@@ -421,6 +434,10 @@ class ActionReserveEvent(Action):
 
         if result.get("success"):
             message = f"Резервација за догађај {tracker.get_slot('event_name')} је успешно креирана."
+        elif result.get("errorCode") == "AlreadyReserved":
+            # Korisnik vec ima rezervaciju (ranije, ili ju je upisao paralelni/ponovljeni
+            # zahtev) - ishod koji je trazio postoji, pa se ne prikazuje kao greska.
+            message = f"Већ имате резервацију за догађај {tracker.get_slot('event_name')} - резервација је активна."
         else:
             message = _operation_error(result, "Резервација није успела.")
 

@@ -180,7 +180,50 @@ class ActionResultTests(ActionTestCase):
         self.assertEqual(json.loads(request.content), {"eventId": 5, "notes": "prvi red"})
         self.assertIn("Summit", slot_value(events, "reservation_action_result"))
 
-    async def test_reserve_error_from_dotnet_is_translated(self):
+    async def test_reserve_already_reserved_code_is_reported_as_active(self):
+        # Rezervacija postoji (ranije ili iz ponovljenog zahteva) - to nije greska za korisnika
+        self.use_fake(FakeDotNet(body={
+            "success": False, "errorCode": "AlreadyReserved",
+            "errorMessage": "You already have a reservation for this event.",
+        }))
+
+        events = await self.run_action(
+            actions.ActionReserveEvent, FakeTracker(slots={"event_id": 5, "event_name": "Summit"})
+        )
+
+        self.assertEqual(
+            slot_value(events, "reservation_action_result"),
+            "Већ имате резервацију за догађај Summit - резервација је активна.",
+        )
+
+    async def test_reserve_error_code_is_translated(self):
+        self.use_fake(FakeDotNet(body={
+            "success": False, "errorCode": "EventFull", "errorMessage": "Any text.",
+        }))
+
+        events = await self.run_action(
+            actions.ActionReserveEvent, FakeTracker(slots={"event_id": 5, "event_name": "Summit"})
+        )
+
+        self.assertEqual(
+            slot_value(events, "reservation_action_result"),
+            "Догађај је попуњен и више не прима резервације.",
+        )
+
+    async def test_unknown_error_code_falls_back_to_generic_text(self):
+        # Kod ima prednost: tekst se ne koristi ni kad bi ga mapa prepoznala
+        self.use_fake(FakeDotNet(body={
+            "success": False, "errorCode": "SomethingNew", "errorMessage": "Reservation not found.",
+        }))
+
+        events = await self.run_action(
+            actions.ActionCancelReservation, FakeTracker(slots={"reservation_id": 1})
+        )
+
+        self.assertEqual(slot_value(events, "reservation_action_result"), "Отказивање резервације није успело.")
+
+    async def test_reserve_error_without_code_is_translated_from_text(self):
+        # Stariji .NET bez errorCode: poruka se prepoznaje po tekstu
         self.use_fake(FakeDotNet(body={
             "success": False, "errorMessage": "You already have a reservation for this event.",
         }))
@@ -203,8 +246,9 @@ class ActionResultTests(ActionTestCase):
         self.assertEqual(slot_value(events, "reservation_action_result"), "Резервација је успешно отказана.")
 
     async def test_cancel_of_reservation_that_is_not_yours_explains_why(self):
-        # .NET vraca errorMessage (ne message) - ranije se zbog toga gubio pravi razlog
-        self.use_fake(FakeDotNet(body={"success": False, "errorMessage": "Reservation not found."}))
+        self.use_fake(FakeDotNet(body={
+            "success": False, "errorCode": "ReservationNotFound", "errorMessage": "Reservation not found.",
+        }))
 
         events = await self.run_action(
             actions.ActionCancelReservation, FakeTracker(slots={"reservation_id": 1005})
