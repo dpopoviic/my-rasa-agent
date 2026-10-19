@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import jwt
+import structlog
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -28,6 +29,8 @@ from secure_rest_channel import (
 )
 
 USER_ID = "user-123"
+MESSAGE_ID = "message-1"
+CORRELATION_ID = "correlation-1"
 NO_ROLES_CLAIM = object()
 
 
@@ -43,6 +46,8 @@ def sign_token(private_key, subject=USER_ID, roles=NO_ROLES_CLAIM) -> str:
         "aud": USER_TOKEN_AUDIENCE,
         "iat": now,
         "exp": now + datetime.timedelta(minutes=5),
+        "jti": MESSAGE_ID,
+        "cid": CORRELATION_ID,
     }
     if roles is not NO_ROLES_CLAIM:
         claims[USER_TOKEN_ROLES_CLAIM] = roles
@@ -178,6 +183,33 @@ class SecureRestChannelRolesTests(unittest.TestCase):
         self.assertEqual(metadata["user_roles"], ["Customer"])
         self.assertEqual(metadata["user_id"], USER_ID)
         self.assertEqual(metadata["language"], "en")
+
+    def test_message_and_correlation_id_from_token_reach_metadata(self):
+        metadata = self.authenticated_metadata(make_request(sign_token(self.private_key)))
+
+        self.assertEqual(metadata["message_id"], MESSAGE_ID)
+        self.assertEqual(metadata["correlation_id"], CORRELATION_ID)
+
+    def test_message_and_correlation_id_sent_by_client_are_ignored(self):
+        request = make_request(
+            sign_token(self.private_key),
+            metadata={"message_id": "forged", "correlation_id": "forged"},
+        )
+
+        metadata = self.authenticated_metadata(request)
+
+        self.assertEqual(metadata["message_id"], MESSAGE_ID)
+        self.assertEqual(metadata["correlation_id"], CORRELATION_ID)
+
+    def test_correlation_id_is_bound_to_logs_and_cleared_for_next_request(self):
+        self.authenticated_metadata(make_request(sign_token(self.private_key)))
+        self.assertEqual(
+            structlog.contextvars.get_contextvars().get("correlation_id"), CORRELATION_ID
+        )
+
+        # Sledeci zahtev na istoj vezi (odbijen) ne sme da nasledi tudji correlation_id
+        self.channel._authenticate(make_request(sign_token(new_private_key())))
+        self.assertNotIn("correlation_id", structlog.contextvars.get_contextvars())
 
     def test_token_signed_with_another_key_is_rejected(self):
         token = sign_token(new_private_key(), roles=["Administrator"])

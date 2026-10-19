@@ -44,6 +44,8 @@ class DecodeUserTokenTests(unittest.TestCase):
             "aud": USER_TOKEN_AUDIENCE,
             "iat": now,
             "exp": now + datetime.timedelta(minutes=5),
+            "jti": "message-1",
+            "cid": "correlation-1",
         }
         claims.update(overrides)
         return {k: v for k, v in claims.items() if v is not None}
@@ -59,6 +61,20 @@ class DecodeUserTokenTests(unittest.TestCase):
         claims = decode_user_token(self.sign(self.claims()), self.public_key)
 
         self.assertEqual(claims["sub"], "user-123")
+        self.assertEqual(claims["jti"], "message-1")
+        self.assertEqual(claims["cid"], "correlation-1")
+
+    def test_missing_message_id_is_rejected(self):
+        self.assert_rejected(self.sign(self.claims(jti=None)))
+
+    def test_missing_correlation_id_is_rejected(self):
+        self.assert_rejected(self.sign(self.claims(cid=None)))
+
+    def test_empty_correlation_id_is_rejected(self):
+        self.assert_rejected(self.sign(self.claims(cid="")))
+
+    def test_non_string_correlation_id_is_rejected(self):
+        self.assert_rejected(self.sign(self.claims(cid=123)))
 
     def test_token_signed_with_another_key_is_rejected(self):
         self.assert_rejected(self.sign(self.claims(), key=ec.generate_private_key(ec.SECP256R1())))

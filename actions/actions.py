@@ -72,7 +72,6 @@ CALL_ERRORS = (httpx.HTTPError, ValueError)
 
 _client: Optional[httpx.AsyncClient] = None
 
-
 def _http() -> httpx.AsyncClient:
     """Jedan HTTP klijent za ceo Rasa proces (connection pooling).
 
@@ -88,13 +87,11 @@ def _http() -> httpx.AsyncClient:
         )
     return _client
 
-
 async def _call_json(method: Text, path: Text, user_token: Text, **kwargs: Any) -> Any:
     """Poziv .NET internog API-ja; vraca JSON telo ili baca neku od CALL_ERRORS."""
     response = await _http().request(method, path, headers=_headers(user_token), **kwargs)
     response.raise_for_status()
     return response.json()
-
 
 def _log_failure(exc: Exception) -> None:
     """Zasto poziv .NET-a nije uspeo - bez tela odgovora i bez query stringa."""
@@ -111,14 +108,12 @@ def _log_failure(exc: Exception) -> None:
     else:
         logger.warning("Internal API call failed: %s", type(exc).__name__)
 
-
 def _operation_error(result: Dict[Text, Any], default: Text) -> Text:
     """Poruka za korisnika kad .NET vrati success: false - po errorCode, a po tekstu samo ako koda nema."""
     code = result.get("errorCode")
     if code:
         return _DOTNET_ERROR_CODES.get(code, default)
     return _DOTNET_ERROR_MESSAGES.get(result.get("errorMessage") or "", default)
-
 
 def _current_user_token(tracker: Tracker) -> Optional[Text]:
     # Metadata upisuje secure_rest kanal tek posto proveri token; poslednja poruka
@@ -127,13 +122,11 @@ def _current_user_token(tracker: Tracker) -> Optional[Text]:
     user_token = metadata.get("user_token")
     return user_token or None
 
-
 def _headers(user_token: Text) -> Dict[Text, Text]:
     return {
         "X-Internal-Api-Key": INTERNAL_API_KEY,
         "Authorization": f"Bearer {user_token}",
     }
-
 
 # Odgovori koji znace "bez filtera" - nisu pravi nazivi/lokacije.
 _NO_FILTER_WORDS = {
@@ -363,7 +356,6 @@ class ActionGetEventAvailability(Action):
 
         return [SlotSet("event_availability_result", message)]
 
-
 class ActionListMyReservations(Action):
     def name(self) -> Text:
         return "action_list_my_reservations"
@@ -398,7 +390,6 @@ class ActionListMyReservations(Action):
         ]
 
         return [SlotSet("my_reservations_result", "\n".join(lines))]
-
 
 class ActionReserveEvent(Action):
     def name(self) -> Text:
@@ -443,7 +434,6 @@ class ActionReserveEvent(Action):
 
         return [SlotSet("reservation_action_result", message)]
 
-
 class ActionCancelReservation(Action):
     def name(self) -> Text:
         return "action_cancel_reservation"
@@ -480,14 +470,12 @@ class ActionCancelReservation(Action):
 
         return [SlotSet("reservation_action_result", message)]
 
-
 # Vrednosti slota requested_language (domain.yml) -> kodovi jezika iz config.yml
 REQUESTED_LANGUAGE_CODES = {
     "serbian_cyrillic": "sr-Cyrl",
     "serbian_latin": "sr-Latn",
     "english": "en",
 }
-
 
 class ActionSetLanguage(Action):
     """Flow change_language: postavlja ugradjeni slot `language` na jezik koji je

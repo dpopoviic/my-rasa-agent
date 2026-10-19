@@ -16,11 +16,13 @@ Zamenjuje Rasin HTTP API (/conversations/<id>/tracker/events?token=...), pa Rasa
 radi bez --enable-api i bez AUTH_TOKEN-a; restart prolazi iste provere kao poruka.
 
 Metadata poruke pravi kanal sam, iz proverenog tokena ({user_id, user_token,
-user_roles}). Od onoga sto je klijent poslao u "metadata" prihvata se samo
+user_roles, message_id, correlation_id}). Od onoga sto je klijent poslao u "metadata" prihvata se samo
 "language", i to samo jezik iz config.yml - Rasa ga na pocetku sesije upisuje u
 slot `language`. Akcije (actions/actions.py) prosledjuju user_token .NET internom
 API-ju, koji ga ponovo proverava. user_roles (claim `roles`) koristi pretraga baze
 znanja da korisniku vrati samo dokumente koje njegove uloge smeju da citaju.
+message_id (claim `jti`) i correlation_id (claim `cid`) povezuju sve sto se uradi
+za jednu poruku; correlation_id dobija i svaki Rasin log tokom obrade zahteva.
 """
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Text
@@ -39,7 +41,9 @@ from rasa.shared.utils.yaml import read_yaml_file
 # koji koristi i MCP server. Konstante se ovde ponovo izvoze zbog testova.
 from user_token import (  # noqa: F401
     USER_TOKEN_AUDIENCE,
+    USER_TOKEN_CORRELATION_ID_CLAIM,
     USER_TOKEN_ISSUER,
+    USER_TOKEN_MESSAGE_ID_CLAIM,
     USER_TOKEN_ROLES_CLAIM,
     decode_user_token,
     load_public_key,
@@ -51,6 +55,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 BEARER_PREFIX = "Bearer "
+# Ime polja u Rasinim (structlog) logovima tokom obrade jednog zahteva
+CORRELATION_ID_LOG_KEY = "correlation_id"
 
 
 def _roles_from_claims(claims: Dict[Text, Any]) -> List[Text]:
@@ -92,6 +98,8 @@ class SecureRestInput(RestInput):
             "user_id": request.ctx.user_id,
             "user_token": request.ctx.user_token,
             "user_roles": request.ctx.user_roles,
+            "message_id": request.ctx.message_id,
+            "correlation_id": request.ctx.correlation_id,
         }
         client_metadata = (request.json or {}).get("metadata") or {}
         language = client_metadata.get("language") if isinstance(client_metadata, dict) else None
@@ -104,6 +112,10 @@ class SecureRestInput(RestInput):
 
     def _authenticate(self, request: Request) -> Optional[response.HTTPResponse]:
         """Odbija zahtev (vraca odgovor) ili upisuje proverene podatke u request.ctx."""
+        # Sanic obradjuje vise zahteva iste (keep-alive) veze u istom asyncio task-u,
+        # pa se correlation_id prethodnog zahteva prvo brise iz konteksta logova.
+        structlog.contextvars.unbind_contextvars(CORRELATION_ID_LOG_KEY)
+
         if request.method == "GET":
             return None  # health check, ne prima poruke
 
@@ -130,6 +142,13 @@ class SecureRestInput(RestInput):
         request.ctx.user_id = user_id
         request.ctx.user_token = token
         request.ctx.user_roles = _roles_from_claims(claims)
+        request.ctx.message_id = claims[USER_TOKEN_MESSAGE_ID_CLAIM]
+        request.ctx.correlation_id = claims[USER_TOKEN_CORRELATION_ID_CLAIM]
+        # Rasa (log_utils) spaja contextvars u svaki structlog zapis, pa svi logovi
+        # obrade ove poruke dobijaju correlation_id bez prosledjivanja.
+        structlog.contextvars.bind_contextvars(
+            **{CORRELATION_ID_LOG_KEY: request.ctx.correlation_id}
+        )
         return None
 
     @staticmethod

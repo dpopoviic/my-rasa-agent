@@ -15,10 +15,14 @@ from typing import Any, Dict, Text
 
 import jwt
 
-# Moraju biti iste kao Issuer / Audience / RolesClaim u .NET UserTokenService
+# Moraju biti iste kao Issuer / Audience / *Claim konstante u .NET UserTokenService
 USER_TOKEN_ISSUER = "event-reservation-app"
 USER_TOKEN_AUDIENCE = "event-reservation-chatbot"
 USER_TOKEN_ROLES_CLAIM = "roles"
+# ID poruke (nov za svaki token) i correlation id (prati obradu jedne poruke kroz
+# Rasu, akcije, MCP i .NET). Potpisani su, pa ih ni LLM ni korisnik ne mogu promeniti.
+USER_TOKEN_MESSAGE_ID_CLAIM = "jti"
+USER_TOKEN_CORRELATION_ID_CLAIM = "cid"
 # Samo ES256: token sa "alg": "none" ili HS256 (javni kljuc kao HMAC tajna) se odbija
 USER_TOKEN_ALGORITHMS = ["ES256"]
 CLOCK_SKEW_SECONDS = 30
@@ -38,7 +42,8 @@ def decode_user_token(token: Text, public_key: Text) -> Dict[Text, Any]:
     """Claim-ovi ispravnog tokena.
 
     Baca jwt.PyJWTError ako token nije ispravan: los potpis, drugi algoritam,
-    pogresan iss/aud, istekao, nedostaje obavezni claim ili je `sub` prazan.
+    pogresan iss/aud, istekao, nedostaje obavezni claim ili je `sub`, `jti` ili
+    `cid` prazan.
     """
     claims = jwt.decode(
         token,
@@ -47,8 +52,13 @@ def decode_user_token(token: Text, public_key: Text) -> Dict[Text, Any]:
         audience=USER_TOKEN_AUDIENCE,
         issuer=USER_TOKEN_ISSUER,
         leeway=CLOCK_SKEW_SECONDS,
-        options={"require": ["exp", "iss", "aud", "sub"]},
+        options={"require": [
+            "exp", "iss", "aud", "sub",
+            USER_TOKEN_MESSAGE_ID_CLAIM, USER_TOKEN_CORRELATION_ID_CLAIM,
+        ]},
     )
-    if not claims.get("sub"):
-        raise jwt.InvalidTokenError("Token has an empty 'sub' claim")
+    for name in ("sub", USER_TOKEN_MESSAGE_ID_CLAIM, USER_TOKEN_CORRELATION_ID_CLAIM):
+        value = claims.get(name)
+        if not isinstance(value, str) or not value:
+            raise jwt.InvalidTokenError(f"Token has an empty or invalid '{name}' claim")
     return claims

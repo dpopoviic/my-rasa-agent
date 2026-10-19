@@ -40,7 +40,7 @@ def sign_token(
     now = datetime.datetime.now(datetime.timezone.utc)
     return jwt.encode(
         {"sub": subject, "iss": USER_TOKEN_ISSUER, "aud": audience,
-         "iat": now, "exp": now + expires_in},
+         "iat": now, "exp": now + expires_in, "jti": "message-1", "cid": "correlation-1"},
         private_key,
         algorithm="ES256",
     )
