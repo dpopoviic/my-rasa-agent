@@ -23,11 +23,19 @@ one HTTP client, so connections (and TLS sessions) to .NET are reused.
 
 Logging: a failed call logs only the method, path (no query string) and status -
 never the response body or the search parameters, which can hold users' data.
+
+Retries: a write (reserve, cancel) whose answer is lost - connection dropped,
+timeout, .NET 5xx - is sent again, always with the same Idempotency-Key, so .NET
+(IdempotencyService) answers the repeat from what it stored instead of running it
+twice. The key is built from the message id (claim jti), the action and the
+resource, so every new user message gets new keys and runs for real.
 """
+import asyncio
 import logging
 import calendar
 import os
 import re
+import uuid
 from typing import Any, Dict, List, Optional, Text
 
 import httpx
@@ -70,6 +78,16 @@ _DOTNET_ERROR_MESSAGES = {
 # Greske poziva .NET-a: mreza/timeout/HTTP status (httpx.HTTPError) ili telo koje nije JSON
 CALL_ERRORS = (httpx.HTTPError, ValueError)
 
+# Upisni poziv (rezervacija, otkazivanje) se pokusava najvise toliko puta, sa pauzama
+# izmedju pokusaja. Ukupno (3 x 10 s + 2 s) daleko je ispod roka tokena (5 min).
+WRITE_ATTEMPTS = 3
+RETRY_DELAYS_SECONDS = (0.5, 1.5)
+
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+# Fiksan namespace za uuid5: isti ulaz (poruka, akcija, resurs) uvek daje isti kljuc.
+# Ne menjati - promena bi dala druge kljuceve za iste zahteve.
+IDEMPOTENCY_NAMESPACE = uuid.UUID("6f1c2a3e-8d4b-4e6a-9c1f-2b7d5e8a9c30")
+
 _client: Optional[httpx.AsyncClient] = None
 
 def _http() -> httpx.AsyncClient:
@@ -92,6 +110,71 @@ async def _call_json(method: Text, path: Text, user_token: Text, **kwargs: Any) 
     response = await _http().request(method, path, headers=_headers(user_token), **kwargs)
     response.raise_for_status()
     return response.json()
+
+def _is_retryable(exc: Exception) -> bool:
+    """Da li ponovljen zahtev ima smisla: odgovor nije stigao, ili je .NET pao (5xx).
+
+    4xx se ne ponavlja - isti zahtev bi dobio isti odgovor. Telo koje nije JSON
+    (ValueError) takodje ne: .NET je odgovorio, samo necim neocekivanim.
+    """
+    if isinstance(exc, httpx.TransportError):  # veza odbijena/pukla, timeout
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+async def _call_json_idempotent(
+    method: Text, path: Text, user_token: Text, idempotency_key: Text, tracker: Tracker,
+    **kwargs: Any,
+) -> Any:
+    """Upisni poziv .NET-a sa Idempotency-Key i ponavljanjem.
+
+    Svaki pokusaj salje ISTI kljuc: ako je .NET prvi zahtev vec izvrsio (a odgovor
+    se izgubio), ponovljeni dobija zapamcen odgovor i nista se ne izvrsava dvaput.
+    Posle poslednjeg neuspelog pokusaja baca gresku kao _call_json.
+    """
+    headers = {**_headers(user_token), IDEMPOTENCY_KEY_HEADER: idempotency_key}
+    for attempt in range(1, WRITE_ATTEMPTS + 1):
+        try:
+            response = await _http().request(method, path, headers=headers, **kwargs)
+            response.raise_for_status()
+            return response.json()
+        except CALL_ERRORS as exc:
+            if attempt == WRITE_ATTEMPTS or not _is_retryable(exc):
+                raise
+            reason = (
+                f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError)
+                else type(exc).__name__
+            )
+            logger.warning(
+                "Internal API call failed, retrying (%s/%s): %s %s -> %s (correlation_id=%s)",
+                attempt, WRITE_ATTEMPTS, method, path, reason, _correlation_id(tracker),
+            )
+            await asyncio.sleep(RETRY_DELAYS_SECONDS[attempt - 1])
+
+async def _has_reservation_for_event(user_token: Text, event_id: int, tracker: Tracker) -> bool:
+    """Provera stanja posle neuspelog upisa: da li korisnik ipak ima rezervaciju za dogadjaj.
+
+    False i kad ni ova provera ne uspe - tada se ne zna, pa korisnik dobija poruku o gresci.
+    """
+    try:
+        reservations = await _call_json("GET", "/api/internal/reservations", user_token) or []
+    except CALL_ERRORS as exc:
+        _log_failure(exc, tracker)
+        return False
+    return any(_as_int(r.get("eventId")) == event_id for r in reservations)
+
+def _idempotency_key(tracker: Tracker, action_name: Text, resource_id: int) -> Optional[Text]:
+    """Kljuc za jedan upis: ista poruka + ista akcija + isti resurs = isti kljuc.
+
+    message_id (claim jti) je nov za svaku poruku korisnika, pa nova poruka (nova
+    namera) dobija nov kljuc i izvrsava se, a ponovljen poziv iz iste poruke ne.
+    None ako poruka nema message_id - tada se kljuc ne moze napraviti.
+    """
+    message_id = _message_metadata(tracker).get("message_id")
+    if not message_id:
+        return None
+    return str(uuid.uuid5(IDEMPOTENCY_NAMESPACE, f"{message_id}:{action_name}:{resource_id}"))
 
 def _log_failure(exc: Exception, tracker: Tracker) -> None:
     """Zasto poziv .NET-a nije uspeo - bez tela odgovora i bez query stringa.
@@ -425,13 +508,29 @@ class ActionReserveEvent(Action):
 
         notes = _clean_text(tracker.get_slot("notes"))
 
+        idempotency_key = _idempotency_key(tracker, self.name(), event_id)
+        if not idempotency_key:
+            # Bez kljuca .NET odbija upis (400); kanal uvek upisuje message_id, pa je ovo greska
+            logger.warning(
+                "Reservation not sent: message has no message_id (correlation_id=%s)",
+                _correlation_id(tracker),
+            )
+            return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
+
         try:
-            result = await _call_json(
-                "POST", "/api/internal/reservations", user_token,
+            result = await _call_json_idempotent(
+                "POST", "/api/internal/reservations", user_token, idempotency_key, tracker,
                 json={"eventId": event_id, "notes": notes},
             )
         except CALL_ERRORS as exc:
             _log_failure(exc, tracker)
+            # Svi pokusaji su pali, ali je .NET mozda ipak upisao (odgovor se izgubio):
+            # pre poruke o gresci proverava se da li rezervacija postoji.
+            if await _has_reservation_for_event(user_token, event_id, tracker):
+                return [SlotSet(
+                    "reservation_action_result",
+                    f"Резервација за догађај {tracker.get_slot('event_name')} је активна.",
+                )]
             return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
 
         if result.get("success"):
@@ -466,9 +565,20 @@ class ActionCancelReservation(Action):
                 "Нисам успео да препознам коју резервацију желите да откажете.",
             )]
 
+        idempotency_key = _idempotency_key(tracker, self.name(), reservation_id)
+        if not idempotency_key:
+            logger.warning(
+                "Cancellation not sent: message has no message_id (correlation_id=%s)",
+                _correlation_id(tracker),
+            )
+            return [SlotSet("reservation_action_result", GENERIC_ERROR_MESSAGE)]
+
         try:
-            result = await _call_json(
-                "DELETE", f"/api/internal/reservations/{reservation_id}", user_token
+            # Sa kljucem ponovljeno otkazivanje (posle izgubljenog odgovora) dobija
+            # prvobitni uspeh, a ne "Reservation not found".
+            result = await _call_json_idempotent(
+                "DELETE", f"/api/internal/reservations/{reservation_id}", user_token,
+                idempotency_key, tracker,
             )
         except CALL_ERRORS as exc:
             _log_failure(exc, tracker)

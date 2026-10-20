@@ -22,18 +22,22 @@ from actions import actions
 
 TOKEN = "user-token-123"
 CORRELATION_ID = "correlation-1"
+MESSAGE_ID = "message-1"
 
 
 class FakeTracker:
     """Samo ono sto akcije citaju: metadata poslednje poruke i slotovi."""
 
     def __init__(self, token: Optional[str] = TOKEN, slots: Optional[Dict[str, Any]] = None,
-                 correlation_id: Optional[str] = CORRELATION_ID):
+                 correlation_id: Optional[str] = CORRELATION_ID,
+                 message_id: Optional[str] = MESSAGE_ID):
         metadata: Dict[str, Any] = {}
         if token:
             metadata["user_token"] = token
         if correlation_id:
             metadata["correlation_id"] = correlation_id
+        if message_id:
+            metadata["message_id"] = message_id
         self.latest_message = {"metadata": metadata}
         self._slots = slots or {}
 
@@ -61,12 +65,38 @@ class FakeDotNet:
         return httpx.Response(self.status, json=self.body)
 
 
+class ScriptedDotNet:
+    """Lazni .NET koji na uzastopne zahteve odgovara redom iz `script`.
+
+    Stavka je izuzetak (baca se, kao prekid veze) ili (status, telo). Kad se
+    script potrosi, ponavlja se poslednja stavka.
+    """
+
+    def __init__(self, *script: Any):
+        self.script = list(script)
+        self.requests: List[httpx.Request] = []
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        step = self.script[min(len(self.requests), len(self.script)) - 1]
+        if isinstance(step, Exception):
+            raise step
+        status, body = step
+        return httpx.Response(status, json=body)
+
+
 def slot_value(events: List[Dict[str, Any]], name: str) -> Any:
     return next(e["value"] for e in events if e.get("name") == name)
 
 
 class ActionTestCase(unittest.IsolatedAsyncioTestCase):
-    def use_fake(self, fake: FakeDotNet) -> FakeDotNet:
+    def setUp(self):
+        # Retry bez cekanja, da testovi ne traju sekundama
+        original = actions.RETRY_DELAYS_SECONDS
+        actions.RETRY_DELAYS_SECONDS = (0, 0)
+        self.addCleanup(setattr, actions, "RETRY_DELAYS_SECONDS", original)
+
+    def use_fake(self, fake: Any) -> Any:
         original = actions._client
         actions._client = httpx.AsyncClient(
             base_url="https://dotnet.test", transport=httpx.MockTransport(fake.handler)
@@ -274,6 +304,119 @@ class ActionResultTests(ActionTestCase):
         )
 
         self.assertEqual(slot_value(events, "reservation_action_result"), "Отказивање резервације није успело.")
+
+
+class IdempotencyTests(ActionTestCase):
+    """Upisi nose Idempotency-Key, a kad odgovor ne stigne ponavljaju se sa ISTIM
+    kljucem - .NET tada vraca zapamcen odgovor umesto da upise jos jednom."""
+
+    RESERVE_SLOTS = {"event_id": 5, "event_name": "Summit"}
+    SUCCESS = (200, {"success": True})
+
+    @staticmethod
+    def keys(fake) -> List[str]:
+        return [r.headers.get(actions.IDEMPOTENCY_KEY_HEADER) for r in fake.requests]
+
+    async def reserve(self, fake, **tracker_args) -> List[Dict[str, Any]]:
+        self.use_fake(fake)
+        return await self.run_action(
+            actions.ActionReserveEvent, FakeTracker(slots=self.RESERVE_SLOTS, **tracker_args)
+        )
+
+    async def test_reserve_sends_key_built_from_message_action_and_event(self):
+        fake = ScriptedDotNet(self.SUCCESS)
+
+        await self.reserve(fake)
+
+        self.assertEqual(
+            self.keys(fake),
+            [actions._idempotency_key(FakeTracker(), "action_reserve_event", 5)],
+        )
+
+    def test_same_message_gives_same_key_and_new_message_a_new_one(self):
+        key = actions._idempotency_key(FakeTracker(), "action_reserve_event", 5)
+
+        self.assertEqual(key, actions._idempotency_key(FakeTracker(), "action_reserve_event", 5))
+        self.assertNotEqual(
+            key, actions._idempotency_key(FakeTracker(message_id="message-2"), "action_reserve_event", 5)
+        )
+        self.assertNotEqual(key, actions._idempotency_key(FakeTracker(), "action_reserve_event", 6))
+        self.assertNotEqual(key, actions._idempotency_key(FakeTracker(), "action_cancel_reservation", 5))
+
+    async def test_lost_answer_is_retried_with_the_same_key(self):
+        fake = ScriptedDotNet(httpx.ReadTimeout("timed out"), self.SUCCESS)
+
+        events = await self.reserve(fake)
+
+        self.assertEqual(len(fake.requests), 2)
+        self.assertEqual(len(set(self.keys(fake))), 1)
+        self.assertIn("успешно креирана", slot_value(events, "reservation_action_result"))
+
+    async def test_server_error_is_retried(self):
+        fake = ScriptedDotNet((500, None), (503, None), self.SUCCESS)
+
+        events = await self.reserve(fake)
+
+        self.assertEqual(len(fake.requests), 3)
+        self.assertIn("успешно креирана", slot_value(events, "reservation_action_result"))
+
+    async def test_client_error_is_not_retried(self):
+        # 4xx: isti zahtev bi dobio isti odgovor
+        fake = ScriptedDotNet((400, None), (401, None))
+
+        with self.assertLogs("actions.actions", level="WARNING"):
+            events = await self.reserve(fake)
+
+        posts = [r for r in fake.requests if r.method == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(slot_value(events, "reservation_action_result"), actions.GENERIC_ERROR_MESSAGE)
+
+    async def test_after_all_attempts_fail_existing_reservation_is_reported_as_active(self):
+        # .NET je upisao, ali nijedan odgovor nije stigao - provera stanja to otkriva
+        fake = ScriptedDotNet(
+            *[httpx.ReadTimeout("timed out")] * actions.WRITE_ATTEMPTS,
+            (200, [{"reservationId": 555, "eventId": 5, "eventName": "Summit"}]),
+        )
+
+        with self.assertLogs("actions.actions", level="WARNING"):
+            events = await self.reserve(fake)
+
+        self.assertEqual(
+            [r.method for r in fake.requests], ["POST"] * actions.WRITE_ATTEMPTS + ["GET"]
+        )
+        self.assertEqual(
+            slot_value(events, "reservation_action_result"), "Резервација за догађај Summit је активна."
+        )
+
+    async def test_after_all_attempts_fail_without_reservation_user_gets_generic_error(self):
+        fake = ScriptedDotNet(
+            *[httpx.ConnectError("refused")] * actions.WRITE_ATTEMPTS, (200, []),
+        )
+
+        with self.assertLogs("actions.actions", level="WARNING"):
+            events = await self.reserve(fake)
+
+        self.assertEqual(slot_value(events, "reservation_action_result"), actions.GENERIC_ERROR_MESSAGE)
+
+    async def test_message_without_message_id_sends_nothing(self):
+        fake = ScriptedDotNet(self.SUCCESS)
+
+        with self.assertLogs("actions.actions", level="WARNING"):
+            events = await self.reserve(fake, message_id=None)
+
+        self.assertEqual(fake.requests, [])
+        self.assertEqual(slot_value(events, "reservation_action_result"), actions.GENERIC_ERROR_MESSAGE)
+
+    async def test_cancel_lost_answer_is_retried_with_the_same_key(self):
+        fake = self.use_fake(ScriptedDotNet(httpx.RemoteProtocolError("dropped"), (200, {"success": True})))
+
+        events = await self.run_action(
+            actions.ActionCancelReservation, FakeTracker(slots={"reservation_id": 555})
+        )
+
+        self.assertEqual([r.method for r in fake.requests], ["DELETE", "DELETE"])
+        self.assertEqual(len(set(self.keys(fake))), 1)
+        self.assertEqual(slot_value(events, "reservation_action_result"), "Резервација је успешно отказана.")
 
 
 class FailureTests(ActionTestCase):
