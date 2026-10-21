@@ -3,15 +3,47 @@
 Pokretanje (iz korena Rasa projekta):  python -m unittest discover -s mcp_tools/tests -t .
 """
 
+import datetime
 import json
+import os
 import unittest
 from typing import Any, Dict, List, Optional
+from unittest import mock
 
 import httpx
+import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from mcp_tools import server
+from user_token import USER_TOKEN_AUDIENCE, USER_TOKEN_ISSUER
+
+
+def new_private_key() -> ec.EllipticCurvePrivateKey:
+    return ec.generate_private_key(ec.SECP256R1())
+
+
+def public_pem(private_key: ec.EllipticCurvePrivateKey) -> str:
+    return private_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+
+
+def sign_token(
+    private_key: ec.EllipticCurvePrivateKey,
+    subject: str = "user-123",
+    audience: str = USER_TOKEN_AUDIENCE,
+    expires_in: datetime.timedelta = datetime.timedelta(minutes=5),
+) -> str:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return jwt.encode(
+        {"sub": subject, "iss": USER_TOKEN_ISSUER, "aud": audience,
+         "iat": now, "exp": now + expires_in, "jti": "message-1", "cid": "correlation-1"},
+        private_key,
+        algorithm="ES256",
+    )
 
 
 class FakeDotNet:
@@ -94,10 +126,19 @@ class BuildSearchParamsTests(unittest.TestCase):
 class ToolCallTests(unittest.IsolatedAsyncioTestCase):
     """Alati se pozivaju kroz pravu MCP sesiju (u memoriji), kao sto ce ih zvati Rasa."""
 
+    def setUp(self) -> None:
+        # MCP proverava token pre poziva .NET-u - testovi potpisuju prave tokene svojim kljucem
+        self.private_key = new_private_key()
+        original = server._user_token_public_key
+        server._user_token_public_key = public_pem(self.private_key)
+        self.addCleanup(setattr, server, "_user_token_public_key", original)
+        self.token = sign_token(self.private_key)
+
     def use_fake(self, fake: FakeDotNet) -> None:
         original = server.api
         server.api = server.InternalApi(transport=httpx.MockTransport(fake.handler))
         self.addCleanup(setattr, server, "api", original)
+        self.addAsyncCleanup(server.api.aclose)
 
     async def call(
         self, tool: str, args: Optional[Dict[str, Any]] = None, meta: Optional[Dict[str, Any]] = None
@@ -109,11 +150,11 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeDotNet(body=[])
         self.use_fake(fake)
 
-        result = await self.call("search_events", {"year": 2026, "month": 10}, {"user_token": "tok-123"})
+        result = await self.call("search_events", {"year": 2026, "month": 10}, {"user_token": self.token})
 
         self.assertFalse(result.isError)
         request = fake.requests[0]
-        self.assertEqual(request.headers["Authorization"], "Bearer tok-123")
+        self.assertEqual(request.headers["Authorization"], f"Bearer {self.token}")
         self.assertIn("X-Internal-Api-Key", request.headers)
         self.assertEqual(request.url.path, "/api/internal/events/search")
         self.assertEqual(request.url.params["startDate"], "2026-10-01")
@@ -137,7 +178,7 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
             "currentUserHasReservation": True, "description": "x" * 500,
         }]))
 
-        result = await self.call("search_events", {}, {"user_token": "t"})
+        result = await self.call("search_events", {}, {"user_token": self.token})
 
         data = json.loads(result.structuredContent["result"])
         self.assertEqual(data["count"], 1)
@@ -153,7 +194,7 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
         events = [{"eventId": i, "name": f"E{i}"} for i in range(server.MAX_EVENTS + 5)]
         self.use_fake(FakeDotNet(body=events))
 
-        result = await self.call("search_events", {}, {"user_token": "t"})
+        result = await self.call("search_events", {}, {"user_token": self.token})
 
         data = json.loads(result.structuredContent["result"])
         self.assertEqual(data["count"], server.MAX_EVENTS + 5)
@@ -164,7 +205,7 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeDotNet(body=[])
         self.use_fake(fake)
 
-        result = await self.call("search_events", {"month": 10}, {"user_token": "t"})
+        result = await self.call("search_events", {"month": 10}, {"user_token": self.token})
 
         self.assertTrue(result.isError)
         self.assertIn("requires `year`", result.content[0].text)
@@ -177,7 +218,7 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
             "eventLocation": "Beograd", "notes": None,
         }]))
 
-        result = await self.call("get_my_reservations", {}, {"user_token": "t"})
+        result = await self.call("get_my_reservations", {}, {"user_token": self.token})
 
         reservation = json.loads(result.structuredContent["result"])["reservations"][0]
         self.assertEqual(reservation["end"], "2026-10-15T21:30:00")
@@ -186,18 +227,82 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_event_availability_is_an_error(self) -> None:
         self.use_fake(FakeDotNet(status=404))
 
-        result = await self.call("get_event_availability", {"event_id": 999}, {"user_token": "t"})
+        result = await self.call("get_event_availability", {"event_id": 999}, {"user_token": self.token})
 
         self.assertTrue(result.isError)
         self.assertIn("999", result.content[0].text)
 
-    async def test_rejected_token_is_an_error(self) -> None:
+    async def test_calls_reuse_one_http_client(self) -> None:
+        # Connection pooling: isti klijent (i njegove veze) za sve pozive alata
+        self.use_fake(FakeDotNet(body=[]))
+
+        await self.call("get_my_reservations", {}, {"user_token": self.token})
+        first_client = server.api._client
+        await self.call("search_events", {}, {"user_token": self.token})
+
+        self.assertIsNotNone(first_client)
+        self.assertIs(server.api._client, first_client)
+
+    async def test_error_log_has_no_response_body(self) -> None:
+        # Telo odgovora moze da sadrzi podatke korisnika - ne sme u log
+        self.use_fake(FakeDotNet(status=500, body={"notes": "PRIVATE-NOTE"}))
+
+        with self.assertLogs("mcp_tools", level="WARNING") as logs:
+            result = await self.call("get_my_reservations", {}, {"user_token": self.token})
+
+        self.assertTrue(result.isError)
+        output = "\n".join(logs.output)
+        self.assertIn("/api/internal/reservations", output)
+        self.assertIn("500", output)
+        self.assertNotIn("PRIVATE-NOTE", output)
+        # cid iz proverenog tokena - povezuje log sa logovima .NET-a i Rase
+        self.assertIn("correlation_id=correlation-1", output)
+
+    async def test_token_rejected_by_dotnet_is_an_error(self) -> None:
+        # Token je ispravan za MCP, ali ga .NET odbija (npr. nalog zakljucan)
         self.use_fake(FakeDotNet(status=401))
 
-        result = await self.call("get_my_reservations", {}, {"user_token": "expired"})
+        result = await self.call("get_my_reservations", {}, {"user_token": self.token})
 
         self.assertTrue(result.isError)
         self.assertIn("not authorized", result.content[0].text)
+
+    # --- Rana provera: los token se odbija u MCP-u, .NET se ne zove ---
+
+    async def assert_rejected_without_calling_dotnet(self, token: str) -> None:
+        fake = FakeDotNet(body=[])
+        self.use_fake(fake)
+
+        result = await self.call("get_my_reservations", {}, {"user_token": token})
+
+        self.assertTrue(result.isError)
+        self.assertIn("session is not valid", result.content[0].text)
+        self.assertEqual(fake.requests, [])
+
+    async def test_expired_token_is_rejected_without_calling_dotnet(self) -> None:
+        expired = sign_token(self.private_key, expires_in=datetime.timedelta(minutes=-5))
+        await self.assert_rejected_without_calling_dotnet(expired)
+
+    async def test_token_signed_with_another_key_is_rejected_without_calling_dotnet(self) -> None:
+        await self.assert_rejected_without_calling_dotnet(sign_token(new_private_key()))
+
+    async def test_token_for_another_audience_is_rejected_without_calling_dotnet(self) -> None:
+        other_audience = sign_token(self.private_key, audience="some-other-api")
+        await self.assert_rejected_without_calling_dotnet(other_audience)
+
+    async def test_malformed_token_is_rejected_without_calling_dotnet(self) -> None:
+        await self.assert_rejected_without_calling_dotnet("not-a-jwt")
+
+
+class StartupTests(unittest.TestCase):
+    def test_missing_public_key_fails_at_startup(self) -> None:
+        # Bez javnog kljuca MCP ne sme da se podigne (inace bi svaki poziv pao tek u radu)
+        missing = os.path.join(os.path.dirname(__file__), "no-such-key.pem")
+        with mock.patch.object(server, "MCP_API_KEY", "secret"), \
+                mock.patch.object(server, "_user_token_public_key", None), \
+                mock.patch.dict(os.environ, {"USER_TOKEN_PUBLIC_KEY_PATH": missing}):
+            with self.assertRaises(FileNotFoundError):
+                server.create_app()
 
 
 class ApiKeyTests(unittest.IsolatedAsyncioTestCase):

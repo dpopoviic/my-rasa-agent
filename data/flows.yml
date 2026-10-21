@@ -1,5 +1,6 @@
 flows:
   search_events:
+    name: претрага догађаја
     description: |
       Koristi ovaj flow kada korisnik pita koji događaji postoje, želi da
       pretraži događaje, ili traži događaje po nazivu/temi, periodu,
@@ -21,7 +22,11 @@ flows:
     steps:
       - collect: search_term
         ask_before_filling: false
-        description: Slobodan tekst za pretragu po nazivu/opisu događaja. Ostavi prazno ako korisnik nije naveo temu.
+        description: |
+          Slobodan tekst za pretragu po nazivu/opisu događaja, TAČNO kako ga je korisnik napisao
+          (bez prevođenja, preslovljavanja i ispravljanja). Ako korisnik misli na događaj iz ranije
+          prikazanog spiska, prepiši naziv iz tog spiska znak po znak. Meseci, datumi i brojevi koji
+          su deo naziva ostaju u nazivu. Ostavi prazno ako korisnik nije naveo temu.
       - collect: start_date
         ask_before_filling: false
         description: Samo događaji koji počinju na ili posle ovog datuma (ISO 8601, npr. 2026-10-05). Samo za konkretan datum, ne za ceo mesec ili godinu.
@@ -30,7 +35,9 @@ flows:
         description: Samo događaji koji počinju na ili pre ovog datuma (ISO 8601). Samo za konkretan datum, ne za ceo mesec ili godinu.
       - collect: search_month
         ask_before_filling: false
-        description: Broj meseca 1-12 ako je korisnik naveo mesec ("oktobar" -> 10). Prazno ako nije.
+        description: |
+          Broj meseca 1-12 ako je korisnik tražio događaje u nekom mesecu ("u oktobru" -> 10).
+          Prazno ako nije, i kada je mesec samo deo naziva događaja (npr. "Event Okt 1").
       - collect: location
         ask_before_filling: false
         description: |
@@ -40,7 +47,8 @@ flows:
         ask_before_filling: false
         description: Postavi na true samo ako je korisnik eksplicitno tražio isključivo događaje sa slobodnim mestima.
         next:
-          - if: slots.search_month != "" and not slots.search_year
+          # ne `!= ""`: kad korisnik ukloni filter, LLM postavi None, a None != "" je tacno
+          - if: slots.search_month and not slots.search_year
             then: ask_year
           - else: run_search
       - id: ask_year
@@ -61,6 +69,7 @@ flows:
           - only_available: false
 
   check_event_availability:
+    name: провера слободних места
     description: |
       Koristi ovaj flow da proveriš preostali kapacitet/dostupnost za JEDAN
       konkretan događaj koji je korisnik imenovao (pun ili skraćen naziv).
@@ -69,7 +78,9 @@ flows:
         collect: event_name
         description: |
           Naziv događaja TAČNO onako kako ga je korisnik napisao, pun ili
-          skraćen (npr. "Summit"). Ne izmišljaj i ne dopunjuj naziv.
+          skraćen (npr. "Summit"), bez prevođenja, preslovljavanja i ispravljanja.
+          Ako korisnik misli na događaj iz ranije prikazanog spiska ("taj", "prvi"),
+          prepiši naziv iz tog spiska znak po znak. Ne izmišljaj i ne dopunjuj naziv.
       - action: action_resolve_event
         next:
           - if: slots.event_match == "found" or slots.event_match == "confirm"
@@ -87,6 +98,7 @@ flows:
           - event_match: null
 
   list_my_reservations:
+    name: преглед мојих резервација
     description: |
       Koristi ovaj flow kada korisnik želi da vidi SVOJE rezervacije
       (npr. "koje rezervacije imam", "prikaži moje rezervacije").
@@ -104,6 +116,7 @@ flows:
       #     utter: utter_invalid_phone_number
 
   reserve_event:
+    name: резервација догађаја
     description: |
       Koristi ovaj flow kada korisnik želi da rezerviše/zakaže mesto na
       događaju za sebe (npr. "rezerviši mi mesto na ...", "napravi mi
@@ -113,7 +126,9 @@ flows:
         collect: event_name
         description: |
           Naziv događaja TAČNO onako kako ga je korisnik napisao, pun ili
-          skraćen (npr. "Summit"). Ne izmišljaj i ne dopunjuj naziv.
+          skraćen (npr. "Summit"), bez prevođenja, preslovljavanja i ispravljanja.
+          Ako korisnik misli na događaj iz ranije prikazanog spiska ("taj", "prvi"),
+          prepiši naziv iz tog spiska znak po znak. Ne izmišljaj i ne dopunjuj naziv.
       - action: action_resolve_event
         next:
           - if: slots.event_match == "found"
@@ -154,6 +169,7 @@ flows:
           - notes: null
 
   complex_event_request:
+    name: план и поређење догађаја
     description: |
       Koristi ovaj flow kada zahtev korisnika o događajima ili njegovim
       rezervacijama zahteva kombinovanje, poređenje ili razmišljanje nad
@@ -173,6 +189,7 @@ flows:
       - call: event_assistant
 
   change_language:
+    name: промена језика
     description: |
       Koristi ovaj flow SAMO kada korisnik izričito traži da mu asistent
       odgovara na drugom jeziku ili pismu, npr. "odgovaraj mi na srpskom",
@@ -190,18 +207,39 @@ flows:
       - action: utter_language_changed
 
   cancel_reservation:
+    name: отказивање резервације
     description: |
       Koristi ovaj flow kada korisnik želi da otkaže jednu od SVOJIH
       postojećih rezervacija.
     steps:
-      - collect: reservation_id
+      - id: ask_reservation_id
+        collect: reservation_id
         ask_before_filling: true
         description: |
           ID rezervacije koju treba otkazati. Ako korisnik pomene događaj po
           imenu umesto ID-a rezervacije, potraži odgovarajući ID rezervacije
           u prethodnim porukama (npr. u rezultatima list_my_reservations
           flow-a, koji navode "ID rezervacije <broj>" za svaki unos).
-      - action: action_cancel_reservation
+      # Otkazivanje se ne moze ponistiti, pa trazi izricito "da": LLM je ID mogao
+      # pogresno da protumaci iz poruke ili istorije razgovora.
+      - id: confirm_cancel
+        collect: cancel_confirmed
+        ask_before_filling: true
+        description: |
+          true samo ako korisnik izričito potvrdi da želi da otkaže tu
+          rezervaciju; false za odbijanje, oklevanje ili bilo šta drugo.
+        next:
+          - if: slots.cancel_confirmed
+            then: do_cancel
+          - else: cancel_aborted
+      - id: do_cancel
+        action: action_cancel_reservation
       - action: utter_reservation_action_result
-      - set_slots:
+        next: cleanup
+      - id: cancel_aborted
+        action: utter_cancel_aborted
+        next: cleanup
+      - id: cleanup
+        set_slots:
           - reservation_id: null
+          - cancel_confirmed: null

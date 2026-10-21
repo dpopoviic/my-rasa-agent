@@ -6,8 +6,11 @@ ih poziva LLM agent preko MCP protokola umesto flow-a.
 
 Identitet korisnika:
 - Rasa agent salje token korisnika u skrivenom `_meta.user_token` polju svakog
-  poziva alata (LLM ga ne vidi). Alat ga prosledjuje kao Authorization: Bearer,
-  uz X-Internal-Api-Key, a .NET (InternalApiKeyHandler) ga ponovo proverava i
+  poziva alata (LLM ga ne vidi). MCP ga prvo sam proveri (potpis, iss, aud, rok -
+  ista pravila kao secure_rest kanal, user_token.py): los ili istekao token se
+  odbija odmah, bez poziva .NET-u, pa se servisni kljuc (X-Internal-Api-Key)
+  dodaje samo na proverene tokene. Ispravan token alat prosledjuje kao
+  Authorization: Bearer, a .NET (InternalApiKeyHandler) ga ponovo proverava i
   korisnika uzima samo iz tokena.
 - Sam MCP server prima samo zahteve sa ispravnim X-Mcp-Api-Key zaglavljem
   (Rasa ga salje iz endpoints.yml) i slusa samo na localhost-u.
@@ -21,12 +24,15 @@ import json
 import logging
 import os
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import httpx
+import jwt
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+
+from user_token import USER_TOKEN_CORRELATION_ID_CLAIM, decode_user_token, load_public_key
 
 load_dotenv()
 
@@ -43,6 +49,12 @@ MCP_HOST = "127.0.0.1"  # samo lokalno - nikad ne izlagati spolja
 MCP_PORT = int(os.environ.get("MCP_SERVER_PORT", "8765"))
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "")
 MCP_API_KEY_HEADER = "x-mcp-api-key"
+# Ogranicenje istovremenih veza/zahteva; preko njega uvicorn odmah vraca 503, umesto
+# da MCP (i .NET iza njega) zagusi gomila poziva - npr. mnogo korisnika odjednom ili
+# agent koji u petlji poziva alate. Uvicorn broji i vezu koja upravo stize, pa
+# istovremeno prolazi najvise N-1 veza (N=1 bi odbijao sve). Ukupno za sve korisnike
+# (Rasa drzi jednu MCP sesiju), ne po korisniku - to ogranicava rate limiting u MVC-u.
+MCP_MAX_CONCURRENCY = int(os.environ.get("MCP_MAX_CONCURRENCY", "50"))
 
 # Ogranicenje velicine odgovora: LLM dobija kompaktne podatke, ne ceo katalog.
 MAX_EVENTS = 50
@@ -57,42 +69,67 @@ mcp = FastMCP("event-tools", host=MCP_HOST, port=MCP_PORT)
 
 
 class InternalApi:
-    """HTTP klijent za /api/internal. `transport` postoji zbog testova."""
+    """HTTP klijent za /api/internal. `transport` postoji zbog testova.
+
+    Jedan httpx klijent za ceo proces (connection pooling): veze, i TLS sesije,
+    ka .NET-u se ponovo koriste umesto da se otvaraju za svaki poziv alata.
+    Logovi sadrze samo putanju (bez query stringa) i status - nikad telo odgovora,
+    jer u njemu mogu biti podaci korisnika (rezervacije, napomene).
+    """
 
     def __init__(self, transport: Optional[httpx.AsyncBaseTransport] = None) -> None:
         self._transport = transport
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _http(self) -> httpx.AsyncClient:
+        # Pravi se pri prvom pozivu, unutar event loop-a servera, za koji se vezuje
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=INTERNAL_API_BASE_URL,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                verify=VERIFY_SSL,
+                transport=self._transport,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def get(
-        self, path: str, user_token: str, params: Optional[Dict[str, Any]] = None
+        self, path: str, session: "UserSession", params: Optional[Dict[str, Any]] = None
     ) -> Any:
-        async with httpx.AsyncClient(
-            base_url=INTERNAL_API_BASE_URL,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            verify=VERIFY_SSL,
-            transport=self._transport,
-        ) as client:
-            try:
-                response = await client.get(
-                    path,
-                    params=params,
-                    headers={
-                        "X-Internal-Api-Key": INTERNAL_API_KEY,
-                        "Authorization": f"Bearer {user_token}",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                logger.warning("Internal API call failed: GET %s -> %r", path, exc)
-                raise ToolError("The application is not reachable right now.") from exc
+        # correlation_id povezuje ove logove sa logovima .NET-a i Rase za istu poruku
+        correlation_id = session.correlation_id
+        try:
+            response = await self._http().get(
+                path,
+                params=params,
+                headers={
+                    "X-Internal-Api-Key": INTERNAL_API_KEY,
+                    "Authorization": f"Bearer {session.token}",
+                },
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Internal API call failed: GET %s -> %s (correlation_id=%s)",
+                path, type(exc).__name__, correlation_id,
+            )
+            raise ToolError("The application is not reachable right now.") from exc
 
         if response.status_code == 404:
             return None
         if response.status_code in (401, 403):
-            logger.warning("Internal API rejected the call: GET %s -> %s", path, response.status_code)
+            logger.warning(
+                "Internal API rejected the call: GET %s -> %s (correlation_id=%s)",
+                path, response.status_code, correlation_id,
+            )
             raise ToolError("The user is not authorized for this data (session may have expired).")
         if response.is_error:
             logger.warning(
-                "Internal API call failed: GET %s -> HTTP %s, body: %s",
-                path, response.status_code, response.text[:500],
+                "Internal API call failed: GET %s -> HTTP %s (correlation_id=%s)",
+                path, response.status_code, correlation_id,
             )
             raise ToolError("The application returned an error.")
         return response.json()
@@ -100,14 +137,39 @@ class InternalApi:
 
 api = InternalApi()
 
+# Javni kljuc za proveru tokena korisnika; ucitava ga create_app() pri startu
+# (bez kljuca MCP se ne podize), a testovi ga postavljaju sami.
+_user_token_public_key: Optional[str] = None
 
-def _user_token(ctx: Context) -> str:
-    """Token korisnika iz skrivenog _meta polja poziva (postavlja ga Rasa agent)."""
+
+def _public_key() -> str:
+    global _user_token_public_key
+    if _user_token_public_key is None:
+        _user_token_public_key = load_public_key()
+    return _user_token_public_key
+
+
+class UserSession(NamedTuple):
+    """Provereni token korisnika i correlation id iz njega (claim `cid`)."""
+
+    token: str
+    correlation_id: str
+
+
+def _user_session(ctx: Context) -> UserSession:
+    """Provereni token korisnika iz skrivenog _meta polja poziva (postavlja ga Rasa agent)."""
     meta = ctx.request_context.meta
     token = getattr(meta, "user_token", None) if meta is not None else None
     if not token:
         raise ToolError("The user is not signed in.")
-    return token
+    try:
+        claims = decode_user_token(token, _public_key())
+    except jwt.PyJWTError as exc:
+        # Samo vrsta greske - token se nikad ne loguje. Ni correlation_id: iz
+        # neproverenog tokena mu se ne moze verovati.
+        logger.warning("Rejected user token: %s", type(exc).__name__)
+        raise ToolError("The user session is not valid (it may have expired).") from exc
+    return UserSession(token, claims[USER_TOKEN_CORRELATION_ID_CLAIM])
 
 
 def _to_json(value: Any) -> str:
@@ -240,7 +302,7 @@ async def search_events(
         search_term, location, start_date, end_date, year, month, only_available
     )
     events: List[Dict[str, Any]] = await api.get(
-        "/api/internal/events/search", _user_token(ctx), params
+        "/api/internal/events/search", _user_session(ctx), params
     ) or []
     return _to_json({
         "count": len(events),
@@ -255,7 +317,7 @@ async def get_event_availability(ctx: Context, event_id: int) -> str:
     can still be reserved. Use the event_id returned by search_events.
     """
     availability = await api.get(
-        f"/api/internal/events/{event_id}/availability", _user_token(ctx)
+        f"/api/internal/events/{event_id}/availability", _user_session(ctx)
     )
     if availability is None:
         raise ToolError(f"No event with event_id {event_id}.")
@@ -275,7 +337,7 @@ async def get_my_reservations(ctx: Context) -> str:
     location. Returns JSON {count, reservations[]}.
     """
     reservations: List[Dict[str, Any]] = await api.get(
-        "/api/internal/reservations", _user_token(ctx)
+        "/api/internal/reservations", _user_session(ctx)
     ) or []
     return _to_json({
         "count": len(reservations),
@@ -323,6 +385,7 @@ def require_api_key(app: Any, api_key: str) -> Any:
 def create_app() -> Any:
     if not MCP_API_KEY:
         raise RuntimeError("MCP_API_KEY is not set (.env).")
+    _public_key()  # bez javnog kljuca (USER_TOKEN_PUBLIC_KEY_PATH) server ne startuje
     return require_api_key(mcp.streamable_http_app(), MCP_API_KEY)
 
 
@@ -330,4 +393,6 @@ if __name__ == "__main__":
     import uvicorn
 
     logging.basicConfig(level=logging.INFO)
-    uvicorn.run(create_app(), host=MCP_HOST, port=MCP_PORT)
+    uvicorn.run(
+        create_app(), host=MCP_HOST, port=MCP_PORT, limit_concurrency=MCP_MAX_CONCURRENCY
+    )
